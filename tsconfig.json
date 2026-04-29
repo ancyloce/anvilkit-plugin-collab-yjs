@@ -1,0 +1,27 @@
+{
+	"extends": "@anvilkit/typescript-config/base.json",
+	"compilerOptions": {
+		"baseUrl": ".",
+		"ignoreDeprecations": "6.0",
+		"jsx": "react-jsx",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"lib": ["ES2022", "DOM"],
+		"outDir": "dist",
+		"rootDir": "src",
+		"strictNullChecks": true,
+		"types": ["react", "react-dom", "node"],
+		"useDefineForClassFields": true,
+		"verbatimModuleSyntax": true
+	},
+	"include": ["src/**/*.ts", "src/**/*.tsx"],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"src/**/*.test.ts",
+		"src/**/*.test.tsx",
+		"src/**/*.spec.ts",
+		"src/**/*.spec.tsx",
+		"src/**/__tests__/**"
+	]
+}

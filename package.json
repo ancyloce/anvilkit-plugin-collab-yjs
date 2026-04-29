@@ -1,0 +1,88 @@
+{
+	"name": "@anvilkit/plugin-collab-yjs",
+	"version": "0.1.0-alpha.0",
+	"description": "Alpha-channel Yjs CRDT collaboration plugin for Anvilkit Studio. Implements the SnapshotAdapter v2 contract over a host-provided transport.",
+	"type": "module",
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		},
+		"./*": {
+			"import": {
+				"types": "./dist/*.d.ts",
+				"default": "./dist/*.js"
+			},
+			"require": {
+				"types": "./dist/*.d.cts",
+				"default": "./dist/*.cjs"
+			}
+		}
+	},
+	"files": ["dist"],
+	"license": "MIT",
+	"sideEffects": false,
+	"private": false,
+	"publishConfig": {
+		"access": "public",
+		"tag": "alpha"
+	},
+	"peerDependencies": {
+		"react": "^18.2.0 || ^19.0.0",
+		"react-dom": "^18.2.0 || ^19.0.0",
+		"@puckeditor/core": "^0.19.0"
+	},
+	"peerDependenciesMeta": {
+		"react": { "optional": false },
+		"react-dom": { "optional": false },
+		"@puckeditor/core": { "optional": false }
+	},
+	"dependencies": {
+		"@anvilkit/core": "workspace:*",
+		"@anvilkit/ir": "workspace:*",
+		"@anvilkit/plugin-version-history": "workspace:*",
+		"@anvilkit/utils": "workspace:*",
+		"y-protocols": "^1.0.6",
+		"yjs": "^13.6.27"
+	},
+	"scripts": {
+		"build": "rslib build",
+		"dev": "rslib build --watch",
+		"lint": "pnpm exec biome lint package.json tsconfig.json rslib.config.ts vitest.config.ts src",
+		"format": "pnpm exec biome check --write package.json tsconfig.json rslib.config.ts vitest.config.ts src",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"publint": "publint",
+		"check:publint": "publint",
+		"check:circular": "madge --circular --extensions ts src/",
+		"size": "size-limit"
+	},
+	"devDependencies": {
+		"@anvilkit/biome-config": "workspace:*",
+		"@anvilkit/typescript-config": "workspace:*",
+		"@anvilkit/vitest-config": "workspace:*",
+		"@puckeditor/core": "^0.21.1",
+		"@rslib/core": "^0.20.1",
+		"@types/node": "^22.15.3",
+		"@types/react": "19.2.14",
+		"@types/react-dom": "19.2.3",
+		"esbuild": "^0.25.12",
+		"madge": "^8.0.0",
+		"publint": "^0.3.18",
+		"react": "^19.2.0",
+		"react-dom": "^19.2.0",
+		"typescript": "6.0.2",
+		"vitest": "^4.1.4",
+		"y-websocket": "^2.1.0"
+	}
+}

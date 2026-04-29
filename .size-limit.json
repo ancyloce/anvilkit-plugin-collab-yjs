@@ -1,0 +1,21 @@
+[
+	{
+		"name": "@anvilkit/plugin-collab-yjs",
+		"path": "dist/index.js",
+		"limit": "30 KB",
+		"gzip": true,
+		"ignore": [
+			"react",
+			"react-dom",
+			"@puckeditor/core",
+			"@anvilkit/core",
+			"@anvilkit/ir",
+			"@anvilkit/plugin-version-history",
+			"@anvilkit/utils",
+			"yjs",
+			"y-protocols",
+			"y-protocols/awareness",
+			"y-websocket"
+		]
+	}
+]
