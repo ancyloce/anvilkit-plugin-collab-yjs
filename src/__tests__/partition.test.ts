@@ -103,22 +103,30 @@ describe("plugin-collab-yjs partition + reconnect", () => {
 		const irOnB = withChildren(baseline, ["n-1", "n-2-from-bob"]);
 		adapterB.save(irOnB, { label: "from-bob" });
 
-		// While disconnected, neither replica sees the other's changes.
-		expect(adapterA.list().map((m) => m.label)).toEqual(["from-alice"]);
-		expect(adapterB.list().map((m) => m.label)).toEqual(["from-bob"]);
+		// While disconnected, neither replica sees the other's new
+		// snapshot, but both retain the shared baseline.
+		expect(adapterA.list().map((m) => m.label)).toEqual([
+			"baseline",
+			"from-alice",
+		]);
+		expect(adapterB.list().map((m) => m.label)).toEqual([
+			"baseline",
+			"from-bob",
+		]);
 
-		// Restore the link. Yjs deterministic LWW collapses both
-		// concurrent writes to a single converged value on each side.
+		// Restore the link. Snapshot metadata is stored by id, so
+		// both offline snapshots survive. The live `pageIR` key still
+		// uses deterministic LWW for the current canvas state.
 		link.connect();
 
 		const finalA = adapterA.list();
 		const finalB = adapterB.list();
 		expect(finalA).toEqual(finalB);
-		// One of the two labels wins under LWW — but BOTH replicas
-		// agree on which one. The contract is convergence, not
-		// preservation of every concurrent write.
-		expect(finalA).toHaveLength(1);
-		expect(["from-alice", "from-bob"]).toContain(finalA[0]?.label);
+		expect(finalA.map((m) => m.label).sort()).toEqual([
+			"baseline",
+			"from-alice",
+			"from-bob",
+		]);
 	});
 
 	it("subscribe fires for queued remote edits the moment the link is restored", () => {
@@ -185,7 +193,11 @@ describe("plugin-collab-yjs partition + reconnect", () => {
 		}
 
 		expect(seenOnA).toEqual([]);
-		// State on B converges to A's final write.
-		expect(adapterB.list().map((m) => typeof m.id)).toEqual(["string"]);
+		// State on B converges to A's writes.
+		expect(adapterB.list().map((m) => typeof m.id)).toEqual([
+			"string",
+			"string",
+			"string",
+		]);
 	});
 });

@@ -94,8 +94,14 @@ describe("plugin-collab-yjs concurrent edits", () => {
 
 		// A edits headline; B edits subtitle. With JSON-blob encoding,
 		// the two writes race on the SAME Y.Map key (`pageIR`).
-		adapterA.save(withHero({ headline: "alice-headline", subtitle: "shared" }), {});
-		adapterB.save(withHero({ headline: "shared", subtitle: "bob-subtitle" }), {});
+		adapterA.save(
+			withHero({ headline: "alice-headline", subtitle: "shared" }),
+			{},
+		);
+		adapterB.save(
+			withHero({ headline: "shared", subtitle: "bob-subtitle" }),
+			{},
+		);
 
 		const finalA = adapterA.list();
 		const finalB = adapterB.list();
