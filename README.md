@@ -33,16 +33,20 @@ registerPlugins([
 
 ## Encoding (alpha)
 
-The entire `PageIR` is JSON-encoded and stored under a single Y.Map
-key. Yjs gives last-writer-wins semantics with deterministic conflict
-resolution — correct, but coarse-grained. See
+The latest live `PageIR` is JSON-encoded and stored under a single
+Y.Map key. Each saved snapshot also gets its own metadata + payload
+keys so the adapter can satisfy the `SnapshotAdapter` history
+contract. Yjs gives last-writer-wins semantics for the live document
+with deterministic conflict resolution — correct, but coarse-grained. See
 [`docs/architecture/realtime-collab.md`](../../../docs/architecture/realtime-collab.md)
 for the alpha trade-offs and the GA plan to mirror the IR tree
 natively into Yjs structures.
 
 ## Reference transport
 
-A minimal `y-websocket` relay lives under `examples/`:
+A minimal `y-websocket` relay lives under `examples/` in this
+repository. The examples directory is source-only and is not included
+in the published npm package:
 
 ```bash
 node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
