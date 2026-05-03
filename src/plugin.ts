@@ -1,5 +1,7 @@
 import type {
+	PageIR,
 	StudioPlugin,
+	StudioPluginContext,
 	StudioPluginRegistration,
 } from "@anvilkit/core/types";
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
@@ -34,7 +36,7 @@ export function createCollabPlugin(
 	options: CreateCollabPluginOptions,
 ): StudioPlugin {
 	let unsubscribe: (() => void) | undefined;
-	let muteNextChange = false;
+	const pendingRemoteDataKeys: string[] = [];
 
 	return {
 		meta: META,
@@ -42,7 +44,7 @@ export function createCollabPlugin(
 			const registration: StudioPluginRegistration = {
 				meta: META,
 				hooks: {
-					onInit(initCtx) {
+					async onInit(initCtx) {
 						if (typeof options.adapter.subscribe !== "function") {
 							initCtx.log(
 								"warn",
@@ -51,15 +53,16 @@ export function createCollabPlugin(
 							return;
 						}
 						unsubscribe = options.adapter.subscribe((ir) => {
-							muteNextChange = true;
-							initCtx
-								.getPuckApi()
-								.dispatch({ type: "setData", data: irToPuckData(ir) });
+							dispatchRemoteIR(initCtx, ir, pendingRemoteDataKeys);
 						});
+						await hydrateLatestSnapshot(
+							initCtx,
+							options,
+							pendingRemoteDataKeys,
+						);
 					},
-					onDataChange(changeCtx, data) {
-						if (muteNextChange) {
-							muteNextChange = false;
+					onDataChange(_changeCtx, data) {
+						if (consumePendingRemoteData(data, pendingRemoteDataKeys)) {
 							return;
 						}
 						if (!options.puckConfig) return;
@@ -77,6 +80,69 @@ export function createCollabPlugin(
 			return registration;
 		},
 	};
+}
+
+async function hydrateLatestSnapshot(
+	ctx: StudioPluginContext,
+	options: CreateCollabPluginOptions,
+	pendingRemoteDataKeys: string[],
+): Promise<void> {
+	try {
+		const snapshots = await Promise.resolve(options.adapter.list());
+		const latest = snapshots.at(-1);
+		if (!latest) return;
+		const ir = await Promise.resolve(options.adapter.load(latest.id));
+		dispatchRemoteIR(ctx, ir, pendingRemoteDataKeys);
+	} catch (error) {
+		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+function dispatchRemoteIR(
+	ctx: StudioPluginContext,
+	ir: PageIR,
+	pendingRemoteDataKeys: string[],
+): void {
+	const data = irToPuckData(ir);
+	pendingRemoteDataKeys.push(stableStringify(data));
+	try {
+		ctx.getPuckApi().dispatch({ type: "setData", data });
+	} catch (error) {
+		pendingRemoteDataKeys.pop();
+		ctx.log("error", "plugin-collab-yjs: remote update dispatch failed.", {
+			error,
+		});
+	}
+}
+
+function consumePendingRemoteData(
+	data: unknown,
+	pendingRemoteDataKeys: string[],
+): boolean {
+	const key = stableStringify(data);
+	const index = pendingRemoteDataKeys.indexOf(key);
+	if (index === -1) return false;
+	pendingRemoteDataKeys.splice(index, 1);
+	return true;
+}
+
+function stableStringify(value: unknown): string {
+	return JSON.stringify(value, (_key, nested) => sortKeysIfObject(nested));
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sortKeysIfObject(value: unknown): unknown {
+	if (!isObject(value)) return value;
+	const sorted: Record<string, unknown> = {};
+	for (const key of Object.keys(value).sort()) {
+		sorted[key] = value[key];
+	}
+	return sorted;
 }
 
 export type { CreateCollabPluginOptions } from "./types.js";

@@ -15,17 +15,23 @@ import type { CreateYjsAdapterOptions } from "./types.js";
 
 const DEFAULT_MAP_NAME = "anvilkit-collab";
 const PAGE_IR_KEY = "pageIR";
-const SNAPSHOT_INDEX_KEY = "snapshotIndex";
+const LEGACY_SNAPSHOT_INDEX_KEY = "snapshotIndex";
+const LAST_PEER_KEY = "lastPeer";
+const SNAPSHOT_META_PREFIX = "snapshotMeta:";
+const SNAPSHOT_PAYLOAD_PREFIX = "snapshotPayload:";
+let snapshotCounter = 0;
 
 /**
  * Build a SnapshotAdapter v2 backed by a shared Y.Doc.
  *
- * Encoding is intentionally simple for the alpha cycle: the entire
- * PageIR is JSON-encoded and stored under a single Y.Map key. Yjs
- * gives last-writer-wins semantics with deterministic conflict
- * resolution, which is correct (eventually-consistent + convergent)
- * but coarse-grained. See `docs/architecture/realtime-collab.md` for
- * the alpha trade-offs and the GA plan to mirror the IR tree natively.
+ * Encoding is intentionally simple for the alpha cycle: the latest
+ * live PageIR is JSON-encoded under one Y.Map key, while saved
+ * snapshots are stored under per-id metadata and payload keys. Yjs
+ * gives last-writer-wins semantics to the live key with deterministic
+ * conflict resolution, which is correct (eventually-consistent +
+ * convergent) but coarse-grained. See
+ * `docs/architecture/realtime-collab.md` for the alpha trade-offs
+ * and the GA plan to mirror the IR tree natively.
  */
 export function createYjsAdapter(
 	options: CreateYjsAdapterOptions,
@@ -53,6 +59,7 @@ export function createYjsAdapter(
 				callback(peers);
 			};
 			awareness.on("change", handler);
+			handler();
 			return () => awareness.off("change", handler);
 		},
 	};
@@ -67,40 +74,36 @@ export function createYjsAdapter(
 				pageIRHash: meta.pageIRHash ?? hashIR(encoded),
 			};
 			options.doc.transact(() => {
+				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
+				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
 				map.set(PAGE_IR_KEY, encoded);
-				map.set(SNAPSHOT_INDEX_KEY, JSON.stringify([snapshotMeta]));
-			}, localPeer.id);
+				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
+			}, localPeer);
 			return snapshotMeta.id;
 		},
 		list() {
-			const raw = map.get(SNAPSHOT_INDEX_KEY);
-			if (typeof raw !== "string") return [];
-			try {
-				const parsed = JSON.parse(raw);
-				return Array.isArray(parsed) ? (parsed as readonly SnapshotMeta[]) : [];
-			} catch {
-				return [];
-			}
+			return readSnapshotMetas(map);
 		},
 		load(id) {
-			const indexRaw = map.get(SNAPSHOT_INDEX_KEY);
-			const exists =
-				typeof indexRaw === "string" &&
-				JSON.parse(indexRaw).some(
-					(meta: SnapshotMeta) => meta.id === id,
-				);
+			const exists = readSnapshotMetas(map).some((meta) => meta.id === id);
 			if (!exists) {
 				throw new Error(
 					`plugin-collab-yjs: no snapshot with id "${id}" in the shared Y.Doc`,
 				);
 			}
-			const irRaw = map.get(PAGE_IR_KEY);
+			const irRaw = map.get(snapshotPayloadKey(id));
 			if (typeof irRaw !== "string") {
 				throw new Error(
-					`plugin-collab-yjs: snapshot index references id "${id}" but pageIR is missing`,
+					`plugin-collab-yjs: snapshot metadata references id "${id}" but its payload is missing`,
 				);
 			}
 			return decodeIR(irRaw);
+		},
+		delete(id) {
+			options.doc.transact(() => {
+				map.delete(snapshotPayloadKey(id));
+				map.delete(snapshotMetaKey(id));
+			}, localPeer);
 		},
 		subscribe(onUpdate: (ir: PageIR, peer?: PeerInfo) => void): Unsubscribe {
 			const observer = (
@@ -108,11 +111,11 @@ export function createYjsAdapter(
 				transaction: Y.Transaction,
 			) => {
 				if (!event.changes.keys.has(PAGE_IR_KEY)) return;
-				if (transaction.origin === localPeer.id) return;
+				if (isLocalOrigin(transaction.origin, localPeer)) return;
 				const raw = map.get(PAGE_IR_KEY);
 				if (typeof raw !== "string") return;
-				const peer = isPeerInfo(transaction.origin)
-					? transaction.origin
+				const peer = event.changes.keys.has(LAST_PEER_KEY)
+					? readLastPeer(map)
 					: undefined;
 				onUpdate(decodeIR(raw), peer);
 			};
@@ -121,6 +124,82 @@ export function createYjsAdapter(
 		},
 		presence,
 	};
+}
+
+function snapshotMetaKey(id: string): string {
+	return `${SNAPSHOT_META_PREFIX}${id}`;
+}
+
+function snapshotPayloadKey(id: string): string {
+	return `${SNAPSHOT_PAYLOAD_PREFIX}${id}`;
+}
+
+function readSnapshotMetas(map: Y.Map<string>): readonly SnapshotMeta[] {
+	const metas: SnapshotMeta[] = [];
+	map.forEach((raw, key) => {
+		if (!key.startsWith(SNAPSHOT_META_PREFIX)) return;
+		const meta = parseSnapshotMeta(raw);
+		if (meta) metas.push(meta);
+	});
+
+	if (metas.length > 0) {
+		return metas.sort(compareSnapshotMeta);
+	}
+
+	return readLegacySnapshotIndex(map);
+}
+
+function readLegacySnapshotIndex(map: Y.Map<string>): readonly SnapshotMeta[] {
+	const raw = map.get(LEGACY_SNAPSHOT_INDEX_KEY);
+	if (typeof raw !== "string") return [];
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter(isSnapshotMeta).sort(compareSnapshotMeta);
+	} catch {
+		return [];
+	}
+}
+
+function parseSnapshotMeta(raw: string): SnapshotMeta | undefined {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return isSnapshotMeta(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readLastPeer(map: Y.Map<string>): PeerInfo | undefined {
+	const raw = map.get(LAST_PEER_KEY);
+	if (typeof raw !== "string") return undefined;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return isPeerInfo(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function compareSnapshotMeta(left: SnapshotMeta, right: SnapshotMeta): number {
+	const bySavedAt = left.savedAt.localeCompare(right.savedAt);
+	return bySavedAt === 0 ? left.id.localeCompare(right.id) : bySavedAt;
+}
+
+function isSnapshotMeta(value: unknown): value is SnapshotMeta {
+	if (value === null || typeof value !== "object") return false;
+	const candidate = value as {
+		id?: unknown;
+		label?: unknown;
+		pageIRHash?: unknown;
+		savedAt?: unknown;
+	};
+	return (
+		typeof candidate.id === "string" &&
+		(candidate.label === undefined || typeof candidate.label === "string") &&
+		typeof candidate.pageIRHash === "string" &&
+		typeof candidate.savedAt === "string"
+	);
 }
 
 function isPresenceState(value: unknown): value is PresenceState {
@@ -139,10 +218,17 @@ function isPeerInfo(value: unknown): value is PeerInfo {
 	);
 }
 
+function isLocalOrigin(origin: unknown, localPeer: PeerInfo): boolean {
+	if (origin === localPeer.id) return true;
+	return isPeerInfo(origin) && origin.id === localPeer.id;
+}
+
 function createPeerId(): string {
 	return `peer-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function createSnapshotId(): string {
-	return `snap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	const counter = snapshotCounter;
+	snapshotCounter += 1;
+	return `snap-${Date.now().toString(36)}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
 }
