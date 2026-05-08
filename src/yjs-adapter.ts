@@ -1,8 +1,7 @@
-import type { PageIR } from "@anvilkit/core/types";
+import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type {
 	PeerInfo,
 	PresenceState,
-	SnapshotAdapter,
 	SnapshotAdapterPresence,
 	SnapshotMeta,
 	Unsubscribe,
@@ -11,7 +10,16 @@ import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { decodeIR, encodeIR, hashIR } from "./encode.js";
-import type { CreateYjsAdapterOptions } from "./types.js";
+import {
+	applyIRToNativeTree,
+	readNativeTree,
+} from "./native-tree.js";
+import { validatePeerInfo, validatePresenceState } from "./presence-schema.js";
+import type {
+	ConflictEvent,
+	CreateYjsAdapterOptions,
+	YjsSnapshotAdapter,
+} from "./types.js";
 
 const DEFAULT_MAP_NAME = "anvilkit-collab";
 const PAGE_IR_KEY = "pageIR";
@@ -35,12 +43,80 @@ let snapshotCounter = 0;
  */
 export function createYjsAdapter(
 	options: CreateYjsAdapterOptions,
-): SnapshotAdapter {
+): YjsSnapshotAdapter {
 	const map = options.doc.getMap<string>(options.mapName ?? DEFAULT_MAP_NAME);
 	const awareness = options.awareness ?? new Awareness(options.doc);
 	const localPeer: PeerInfo = options.peer ?? {
 		id: createPeerId(),
 	};
+	const staleAfterMs = options.staleAfterMs ?? 2000;
+	const useNativeTree = options.useNativeTree ?? false;
+	const conflictListeners = new Set<(event: ConflictEvent) => void>();
+	const subscribeListeners = new Set<
+		(ir: PageIR, peer?: PeerInfo) => void
+	>();
+	let lastLocalSavedAt: number | undefined;
+	let lastLocalIR: PageIR | undefined;
+	const treeRoot = useNativeTree
+		? options.doc.getMap<unknown>(
+				`${options.mapName ?? DEFAULT_MAP_NAME}:tree`,
+			)
+		: undefined;
+
+	const observer = (
+		event: Y.YMapEvent<string>,
+		transaction: Y.Transaction,
+	) => {
+		if (!event.changes.keys.has(PAGE_IR_KEY)) return;
+		if (isLocalOrigin(transaction.origin, localPeer)) return;
+		const peer = event.changes.keys.has(LAST_PEER_KEY)
+			? readLastPeer(map)
+			: undefined;
+		const remoteIR = readCurrentIR();
+		if (!remoteIR) return;
+		maybeFireConflict(remoteIR, peer);
+		lastLocalIR = remoteIR;
+		for (const listener of subscribeListeners) {
+			try {
+				listener(remoteIR, peer);
+			} catch {
+				// listener errors must not prevent other listeners from
+				// receiving the same update.
+			}
+		}
+	};
+	map.observe(observer);
+
+	if (treeRoot) {
+		const treeObserver = (
+			_events: Y.YEvent<Y.AbstractType<unknown>>[],
+			transaction: Y.Transaction,
+		) => {
+			if (isLocalOrigin(transaction.origin, localPeer)) return;
+			// The legacy `pageIR` key observer above already handles
+			// remote dispatch when it lands in the same transaction. The
+			// native-tree observer is only here to keep `lastLocalIR`
+			// synced with merged tree state when only the tree changed
+			// (e.g. a peer running a future tree-only save path).
+			const remoteIR = readNativeTree(treeRoot);
+			if (remoteIR) lastLocalIR = remoteIR;
+		};
+		treeRoot.observeDeep(treeObserver);
+	}
+
+	function readCurrentIR(): PageIR | undefined {
+		if (treeRoot) {
+			const fromTree = readNativeTree(treeRoot);
+			if (fromTree) return fromTree;
+		}
+		const raw = map.get(PAGE_IR_KEY);
+		if (typeof raw !== "string") return undefined;
+		try {
+			return decodeIR(raw);
+		} catch {
+			return undefined;
+		}
+	}
 
 	const presence: SnapshotAdapterPresence = {
 		update(state: PresenceState): void {
@@ -52,9 +128,8 @@ export function createYjsAdapter(
 			const handler = () => {
 				const peers: PresenceState[] = [];
 				for (const value of awareness.getStates().values()) {
-					if (isPresenceState(value)) {
-						peers.push(value);
-					}
+					const validated = validatePresenceState(value);
+					if (validated !== null) peers.push(validated);
 				}
 				callback(peers);
 			};
@@ -76,9 +151,17 @@ export function createYjsAdapter(
 			options.doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
 				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
+				if (treeRoot) {
+					applyIRToNativeTree(treeRoot, ir, lastLocalIR);
+				}
+				// PAGE_IR_KEY is still maintained for legacy fallback,
+				// snapshot hashing, and conflict-event dispatch even when
+				// the native tree is the source of truth.
 				map.set(PAGE_IR_KEY, encoded);
 				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
 			}, localPeer);
+			lastLocalIR = ir;
+			lastLocalSavedAt = Date.now();
 			return snapshotMeta.id;
 		},
 		list() {
@@ -106,24 +189,101 @@ export function createYjsAdapter(
 			}, localPeer);
 		},
 		subscribe(onUpdate: (ir: PageIR, peer?: PeerInfo) => void): Unsubscribe {
-			const observer = (
-				event: Y.YMapEvent<string>,
-				transaction: Y.Transaction,
-			) => {
-				if (!event.changes.keys.has(PAGE_IR_KEY)) return;
-				if (isLocalOrigin(transaction.origin, localPeer)) return;
-				const raw = map.get(PAGE_IR_KEY);
-				if (typeof raw !== "string") return;
-				const peer = event.changes.keys.has(LAST_PEER_KEY)
-					? readLastPeer(map)
-					: undefined;
-				onUpdate(decodeIR(raw), peer);
+			subscribeListeners.add(onUpdate);
+			return () => {
+				subscribeListeners.delete(onUpdate);
 			};
-			map.observe(observer);
-			return () => map.unobserve(observer);
+		},
+		onConflict(callback) {
+			conflictListeners.add(callback);
+			return () => {
+				conflictListeners.delete(callback);
+			};
 		},
 		presence,
 	};
+
+	function maybeFireConflict(remoteIR: PageIR, remotePeer?: PeerInfo): void {
+		if (conflictListeners.size === 0) return;
+		if (lastLocalSavedAt === undefined || lastLocalIR === undefined) return;
+		const elapsed = Date.now() - lastLocalSavedAt;
+		if (elapsed > staleAfterMs) return;
+		const overlap = computeOverlap(lastLocalIR, remoteIR);
+		if (overlap.length === 0) return;
+		const event: ConflictEvent = {
+			kind: "overlap",
+			localPeer,
+			remotePeer,
+			nodeIds: overlap,
+			at: new Date().toISOString(),
+		};
+		for (const listener of conflictListeners) {
+			try {
+				listener(event);
+			} catch {
+				// listener errors are swallowed; conflict reporting must not
+				// poison the subscribe path.
+			}
+		}
+	}
+}
+
+function computeOverlap(local: PageIR, remote: PageIR): readonly string[] {
+	const localNodes = collectNodes(local.root);
+	const remoteNodes = collectNodes(remote.root);
+	const overlap: string[] = [];
+	for (const [id, localNode] of localNodes) {
+		const remoteNode = remoteNodes.get(id);
+		if (!remoteNode) continue;
+		if (
+			!shallowPropsEqual(localNode.props, remoteNode.props) ||
+			!sameChildOrder(localNode.children, remoteNode.children)
+		) {
+			overlap.push(id);
+		}
+	}
+	return overlap;
+}
+
+function collectNodes(node: PageIRNode): Map<string, PageIRNode> {
+	const out = new Map<string, PageIRNode>();
+	const stack: PageIRNode[] = [node];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!current) continue;
+		out.set(current.id, current);
+		if (current.children) stack.push(...current.children);
+	}
+	return out;
+}
+
+function shallowPropsEqual(
+	left: Record<string, unknown> | undefined,
+	right: Record<string, unknown> | undefined,
+): boolean {
+	if (left === right) return true;
+	const a = left ?? {};
+	const b = right ?? {};
+	const ak = Object.keys(a);
+	const bk = Object.keys(b);
+	if (ak.length !== bk.length) return false;
+	for (const key of ak) {
+		if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+	}
+	return true;
+}
+
+function sameChildOrder(
+	left: readonly PageIRNode[] | undefined,
+	right: readonly PageIRNode[] | undefined,
+): boolean {
+	const a = left ?? [];
+	const b = right ?? [];
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i += 1) {
+		if (a[i]?.id !== b[i]?.id) return false;
+	}
+	return true;
 }
 
 function snapshotMetaKey(id: string): string {
@@ -175,7 +335,7 @@ function readLastPeer(map: Y.Map<string>): PeerInfo | undefined {
 	if (typeof raw !== "string") return undefined;
 	try {
 		const parsed: unknown = JSON.parse(raw);
-		return isPeerInfo(parsed) ? parsed : undefined;
+		return validatePeerInfo(parsed) ?? undefined;
 	} catch {
 		return undefined;
 	}
@@ -202,25 +362,10 @@ function isSnapshotMeta(value: unknown): value is SnapshotMeta {
 	);
 }
 
-function isPresenceState(value: unknown): value is PresenceState {
-	if (value === null || typeof value !== "object") return false;
-	const candidate = value as { peer?: unknown };
-	if (!candidate.peer || typeof candidate.peer !== "object") return false;
-	const peer = candidate.peer as { id?: unknown };
-	return typeof peer.id === "string";
-}
-
-function isPeerInfo(value: unknown): value is PeerInfo {
-	return (
-		value !== null &&
-		typeof value === "object" &&
-		typeof (value as { id?: unknown }).id === "string"
-	);
-}
-
 function isLocalOrigin(origin: unknown, localPeer: PeerInfo): boolean {
 	if (origin === localPeer.id) return true;
-	return isPeerInfo(origin) && origin.id === localPeer.id;
+	const peer = validatePeerInfo(origin);
+	return peer !== null && peer.id === localPeer.id;
 }
 
 function createPeerId(): string {
