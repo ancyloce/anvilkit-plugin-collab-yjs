@@ -29,7 +29,54 @@ export interface CreateYjsAdapterOptions {
 	 * a Y.Doc — pick one mode per room.
 	 */
 	readonly useNativeTree?: boolean;
+	/**
+	 * Phase 2 (D8). Optional transport-event source. The host calls
+	 * the supplied `emit` with normalized `ConnectionStatus` values as
+	 * its provider's connection state changes. The adapter exposes
+	 * the latest status via `onStatusChange`.
+	 *
+	 * If omitted, the adapter starts in `connecting` and flips to
+	 * `synced` on the first `subscribe` registration so single-process
+	 * demos and tests behave sensibly without provider plumbing.
+	 */
+	readonly connectionSource?: ConnectionSource;
 }
+
+/**
+ * Discriminated union describing the host transport's lifecycle as
+ * observed by the adapter. The five variants give hosts a transport-
+ * agnostic surface to render a unified sync indicator without reading
+ * provider-specific fields like `wsconnected`.
+ */
+export type ConnectionStatus =
+	| { readonly kind: "connecting" }
+	| { readonly kind: "synced"; readonly since: string }
+	| {
+			readonly kind: "offline";
+			readonly since: string;
+			readonly queuedEdits: number;
+	  }
+	| {
+			readonly kind: "reconnecting";
+			readonly attempt: number;
+			readonly backoffMs: number;
+	  }
+	| {
+			readonly kind: "error";
+			readonly message: string;
+			readonly recoverable: boolean;
+	  };
+
+/**
+ * Callback wired by the adapter into the host transport. The host
+ * invokes `emit` with the latest `ConnectionStatus` when its provider
+ * changes state (connect, sync, disconnect, retry, fail).
+ *
+ * Returns an unsubscribe used by the adapter on `destroy`.
+ */
+export type ConnectionSource = (
+	emit: (status: ConnectionStatus) => void,
+) => () => void;
 
 /**
  * Event payload emitted by `YjsSnapshotAdapter.onConflict` when a
@@ -47,14 +94,47 @@ export interface ConflictEvent {
 
 /**
  * Yjs-specific extension of `SnapshotAdapter` that exposes the
- * conflict-diagnostics event surface. `createYjsAdapter` returns this
- * narrow type so hosts can subscribe to overlap events without
- * dropping into Yjs internals.
+ * conflict-diagnostics event surface, the connection-state contract,
+ * and the force-resync action. `createYjsAdapter` returns this narrow
+ * type so hosts can subscribe to overlap events and render sync UI
+ * without dropping into Yjs internals.
  */
 export interface YjsSnapshotAdapter extends SnapshotAdapter {
 	readonly onConflict: (
 		callback: (event: ConflictEvent) => void,
 	) => Unsubscribe;
+	/**
+	 * Subscribe to `ConnectionStatus` transitions. The callback is
+	 * invoked synchronously with the current status on registration so
+	 * hosts can paint an initial state without waiting for the next
+	 * transport event.
+	 */
+	readonly onStatusChange: (
+		callback: (status: ConnectionStatus) => void,
+	) => Unsubscribe;
+	/**
+	 * Read the current `ConnectionStatus` synchronously. Useful for
+	 * non-React hosts; React hosts should prefer `onStatusChange`
+	 * inside a `useSyncExternalStore` to avoid tearing.
+	 */
+	readonly getStatus: () => ConnectionStatus;
+	/**
+	 * Discard unsaved local edits and re-emit the latest authoritative
+	 * snapshot through `subscribe`. Wired into
+	 * `<ForceResyncDialog />` when the host is using the
+	 * `@anvilkit/collab-ui` package.
+	 *
+	 * If no snapshot exists, resolves to `null` and the live IR is
+	 * left untouched — hosts should disable the action in that case.
+	 */
+	readonly forceResync: () => Promise<PageIR | null>;
+	/**
+	 * Release internal subscriptions (the optional `connectionSource`
+	 * tear-down, status/conflict/subscribe listener sets). Hosts using
+	 * `createCollabPlugin` do not need to call this directly — the
+	 * Studio plugin's `onDestroy` invokes it automatically.
+	 */
+	readonly destroy: () => void;
 }
 
 /**

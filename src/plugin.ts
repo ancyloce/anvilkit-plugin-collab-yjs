@@ -13,11 +13,11 @@ import type {
 
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
-	name: "Collab (Yjs beta)",
-	version: "0.2.0-beta.0",
+	name: "Collab (Yjs)",
+	version: "0.9.0-rc.0",
 	coreVersion: "^0.1.0-alpha",
 	description:
-		"Beta-channel realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, and an opt-in native Y.Map IR tree for per-node merge.",
+		"GA-candidate realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree for per-node merge, a transport-agnostic connection-state contract, and force-resync.",
 } as const;
 
 /**
@@ -77,6 +77,10 @@ export function createCollabPlugin(
 							unsubscribe();
 							unsubscribe = undefined;
 						}
+						const { destroy } = options.adapter as {
+							destroy?: () => void;
+						};
+						destroy?.();
 					},
 				},
 			};

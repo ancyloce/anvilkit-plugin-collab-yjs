@@ -17,6 +17,7 @@ import {
 import { validatePeerInfo, validatePresenceState } from "./presence-schema.js";
 import type {
 	ConflictEvent,
+	ConnectionStatus,
 	CreateYjsAdapterOptions,
 	YjsSnapshotAdapter,
 } from "./types.js";
@@ -55,6 +56,14 @@ export function createYjsAdapter(
 	const subscribeListeners = new Set<
 		(ir: PageIR, peer?: PeerInfo) => void
 	>();
+	const statusListeners = new Set<(status: ConnectionStatus) => void>();
+	let currentStatus: ConnectionStatus = { kind: "connecting" };
+	let unsubscribeConnectionSource: (() => void) | undefined;
+	if (options.connectionSource) {
+		unsubscribeConnectionSource = options.connectionSource((next) => {
+			emitStatus(next);
+		});
+	}
 	let lastLocalSavedAt: number | undefined;
 	let lastLocalIR: PageIR | undefined;
 	const treeRoot = useNativeTree
@@ -190,6 +199,12 @@ export function createYjsAdapter(
 		},
 		subscribe(onUpdate: (ir: PageIR, peer?: PeerInfo) => void): Unsubscribe {
 			subscribeListeners.add(onUpdate);
+			if (
+				!options.connectionSource &&
+				currentStatus.kind === "connecting"
+			) {
+				emitStatus({ kind: "synced", since: new Date().toISOString() });
+			}
 			return () => {
 				subscribeListeners.delete(onUpdate);
 			};
@@ -200,8 +215,65 @@ export function createYjsAdapter(
 				conflictListeners.delete(callback);
 			};
 		},
+		onStatusChange(callback) {
+			statusListeners.add(callback);
+			try {
+				callback(currentStatus);
+			} catch {
+				// listener errors must not break registration.
+			}
+			return () => {
+				statusListeners.delete(callback);
+			};
+		},
+		getStatus() {
+			return currentStatus;
+		},
+		async forceResync(): Promise<PageIR | null> {
+			const metas = readSnapshotMetas(map);
+			const latest = metas[metas.length - 1];
+			if (!latest) return null;
+			const irRaw = map.get(snapshotPayloadKey(latest.id));
+			if (typeof irRaw !== "string") return null;
+			const restored = decodeIR(irRaw);
+			options.doc.transact(() => {
+				if (treeRoot) {
+					applyIRToNativeTree(treeRoot, restored, lastLocalIR);
+				}
+				map.set(PAGE_IR_KEY, irRaw);
+				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
+			}, localPeer);
+			lastLocalIR = restored;
+			lastLocalSavedAt = Date.now();
+			for (const listener of subscribeListeners) {
+				try {
+					listener(restored, localPeer);
+				} catch {
+					// listener errors must not block resync from completing.
+				}
+			}
+			return restored;
+		},
+		destroy() {
+			unsubscribeConnectionSource?.();
+			unsubscribeConnectionSource = undefined;
+			statusListeners.clear();
+			subscribeListeners.clear();
+			conflictListeners.clear();
+		},
 		presence,
 	};
+
+	function emitStatus(next: ConnectionStatus): void {
+		currentStatus = next;
+		for (const listener of statusListeners) {
+			try {
+				listener(next);
+			} catch {
+				// listener errors must not poison sibling listeners.
+			}
+		}
+	}
 
 	function maybeFireConflict(remoteIR: PageIR, remotePeer?: PeerInfo): void {
 		if (conflictListeners.size === 0) return;

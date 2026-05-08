@@ -11,6 +11,8 @@ export type { CreateDebouncedAdapterOptions } from "./debounced-adapter.js";
 export type {
 	CollabPluginRuntime,
 	ConflictEvent,
+	ConnectionSource,
+	ConnectionStatus,
 	CreateCollabPluginOptions,
 	CreateYjsAdapterOptions,
 	ValidateRemoteIR,
