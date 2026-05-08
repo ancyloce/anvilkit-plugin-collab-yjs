@@ -191,6 +191,94 @@ describe("createCollabPlugin", () => {
 		);
 	});
 
+	it("validateRemoteIR null return rejects the dispatch and logs a warning", async () => {
+		const adapter = fakeAdapter();
+		const dispatch = vi.fn();
+		const ctx = createFakeStudioContext({
+			getPuckApi: vi.fn(
+				() => ({ dispatch }) as unknown as PuckApi,
+			) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const onValidationFailure = vi.fn();
+		const harness = await registerPlugin(
+			createCollabPlugin({
+				adapter,
+				validateRemoteIR: () => null,
+				onValidationFailure,
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		adapter.pushUpdate(createFakePageIR({ rootId: "rejected" }));
+
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(onValidationFailure).toHaveBeenCalledWith({ kind: "rejected" });
+		expect(ctx._mocks.logCalls).toEqual(
+			expect.arrayContaining([
+				expect.arrayContaining([
+					"warn",
+					expect.stringContaining("rejected by validator"),
+				]),
+			]),
+		);
+	});
+
+	it("validateRemoteIR throw is treated as rejection and includes the error", async () => {
+		const adapter = fakeAdapter();
+		const dispatch = vi.fn();
+		const ctx = createFakeStudioContext({
+			getPuckApi: vi.fn(
+				() => ({ dispatch }) as unknown as PuckApi,
+			) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const onValidationFailure = vi.fn();
+		const harness = await registerPlugin(
+			createCollabPlugin({
+				adapter,
+				validateRemoteIR: () => {
+					throw new Error("not a valid IR");
+				},
+				onValidationFailure,
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		adapter.pushUpdate(createFakePageIR({ rootId: "rejected" }));
+
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(onValidationFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "threw" }),
+		);
+	});
+
+	it("validateRemoteIR returning a transformed IR forwards it to dispatch", async () => {
+		const adapter = fakeAdapter();
+		const dispatch = vi.fn();
+		const ctx = createFakeStudioContext({
+			getPuckApi: vi.fn(
+				() => ({ dispatch }) as unknown as PuckApi,
+			) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const replacement = createFakePageIR({ rootId: "rewritten" });
+		const harness = await registerPlugin(
+			createCollabPlugin({
+				adapter,
+				validateRemoteIR: () => replacement,
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		adapter.pushUpdate(createFakePageIR({ rootId: "incoming" }));
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "setData",
+			data: irToPuckData(replacement),
+		});
+	});
+
 	it("logs a warning when the adapter has no subscribe()", async () => {
 		const adapter: SnapshotAdapter = {
 			save: () => "id",

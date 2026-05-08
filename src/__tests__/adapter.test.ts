@@ -1,10 +1,17 @@
 import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PresenceState } from "@anvilkit/plugin-version-history";
+import { runAdapterContract } from "@anvilkit/plugin-version-history/testing";
 import { describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
 import { createYjsAdapter } from "../yjs-adapter.js";
+
+runAdapterContract(() => createYjsAdapter({ doc: new YDoc() }), {
+	describe,
+	expect,
+	it,
+});
 
 describe("createYjsAdapter", () => {
 	it("save and load round-trip a single PageIR", () => {
