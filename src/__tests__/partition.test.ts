@@ -25,6 +25,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
+import type { ConflictEvent } from "../types.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 /**
@@ -171,6 +172,88 @@ describe("plugin-collab-yjs partition + reconnect", () => {
 		]);
 
 		stop?.();
+	});
+
+	it("fires onConflict on reconnect when both replicas edited the same node while disconnected", () => {
+		const docA = new YDoc();
+		const docB = new YDoc();
+		const link = makePartitionableLink(docA, docB);
+
+		const adapterA = createYjsAdapter({
+			doc: docA,
+			peer: { id: "alice" },
+			staleAfterMs: 5000,
+		});
+		const adapterB = createYjsAdapter({
+			doc: docB,
+			peer: { id: "bob" },
+			staleAfterMs: 5000,
+		});
+
+		// Shared baseline so node ids are known to both replicas.
+		const baseline = withChildren(createFakePageIR(), ["hero-1"]);
+		adapterA.save(baseline, { label: "baseline" });
+
+		const eventsOnA: ConflictEvent[] = [];
+		const eventsOnB: ConflictEvent[] = [];
+		adapterA.onConflict((e) => eventsOnA.push(e));
+		adapterB.onConflict((e) => eventsOnB.push(e));
+
+		// Drop the link; both sides edit the same node concurrently.
+		link.disconnect();
+		// Distinct edits on the same node id so overlap fires on reconnect.
+		const aliceEdit: PageIR = {
+			...baseline,
+			root: {
+				...baseline.root,
+				children: [
+					{ id: "hero-1", type: "Hero", props: { headline: "alice-edit" } },
+				],
+			},
+		};
+		const bobEdit: PageIR = {
+			...baseline,
+			root: {
+				...baseline.root,
+				children: [
+					{ id: "hero-1", type: "Hero", props: { headline: "bob-edit" } },
+				],
+			},
+		};
+		adapterA.save(aliceEdit, {});
+		adapterB.save(bobEdit, {});
+
+		// While the link is down, neither side has heard the other's
+		// edit, so neither overlap event has fired yet.
+		expect(eventsOnA).toEqual([]);
+		expect(eventsOnB).toEqual([]);
+
+		link.connect();
+
+		// At least one side observes the overlap on reconnect. Yjs
+		// resolves the legacy `pageIR` Y.Map key by deterministic LWW —
+		// the *losing* replica sees its key flip to the winner's value
+		// and fires the overlap event. The winning replica may not see
+		// its key change at all (no Y.Map observe callback when the
+		// merged value matches its existing value), so we don't pin
+		// which specific side fires. The native-tree path (D1) emits
+		// per-node merges for both sides.
+		const total = eventsOnA.length + eventsOnB.length;
+		expect(total).toBeGreaterThanOrEqual(1);
+		const all = [...eventsOnA, ...eventsOnB];
+		expect(all[0]?.kind).toBe("overlap");
+		expect(all[0]?.nodeIds).toContain("hero-1");
+		// Whoever fires, the localPeer must be self and remotePeer must
+		// be the other side (or undefined if the legacy peer record
+		// wasn't part of the same merge transaction).
+		for (const event of all) {
+			expect(event.kind).toBe("overlap");
+			expect(["alice", "bob"]).toContain(event.localPeer.id);
+			if (event.remotePeer) {
+				expect(["alice", "bob"]).toContain(event.remotePeer.id);
+				expect(event.remotePeer.id).not.toBe(event.localPeer.id);
+			}
+		}
 	});
 
 	it("repeated reconnects after silent windows produce no spurious local callbacks", () => {

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
 import { decodeIR, encodeIR } from "../encode.js";
+import { readNativeTree } from "../native-tree.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 const STUB_CONFIG: Config = {
@@ -156,6 +157,55 @@ describe("plugin-collab-yjs round-trip", () => {
 			expect(reIR.root.children?.length ?? 0).toBe(
 				ir.root.children?.length ?? 0,
 			);
+		}
+	});
+
+	it("native Y.Map encoding round-trips through 100 random edits (D1 fuzz)", () => {
+		const rng = rngFactory(0xdec0de);
+		const docA = new YDoc();
+		const docB = new YDoc();
+		pairDocs(docA, docB);
+
+		const adapterA = createYjsAdapter({
+			doc: docA,
+			peer: { id: "alice" },
+			useNativeTree: true,
+		});
+		const adapterB = createYjsAdapter({
+			doc: docB,
+			peer: { id: "bob" },
+			useNativeTree: true,
+		});
+
+		const treeMapName = "anvilkit-collab:tree";
+		let ir = createFakePageIR();
+		adapterA.save(ir, {});
+
+		for (let step = 0; step < 100; step++) {
+			ir = mutateIR(ir, rng, step);
+			const writer = step % 2 === 0 ? adapterA : adapterB;
+			writer.save(ir, {});
+
+			// Both replicas reconstruct the same IR from the live native
+			// tree — this is the per-node CRDT mirror, not the legacy
+			// JSON blob.
+			const fromTreeA = readNativeTree(docA.getMap<unknown>(treeMapName));
+			const fromTreeB = readNativeTree(docB.getMap<unknown>(treeMapName));
+			expect(fromTreeA).toBeDefined();
+			expect(fromTreeB).toBeDefined();
+			expect(fromTreeA).toEqual(fromTreeB);
+			// And the reconstructed IR matches the IR last written by
+			// the most recent author. Fuzz mutations exercise add /
+			// remove / mutate-prop / reverse — every shape must survive
+			// the encode → Yjs → decode round-trip.
+			expect(fromTreeA?.root.id).toBe(ir.root.id);
+			const treeChildIds = (fromTreeA?.root.children ?? []).map(
+				(c) => c.id,
+			);
+			const irChildIds = (ir.root.children ?? []).map((c) => c.id);
+			expect(treeChildIds).toEqual(irChildIds);
+			// Snapshot list still converges on the legacy path.
+			expect(adapterA.list()).toEqual(adapterB.list());
 		}
 	});
 });

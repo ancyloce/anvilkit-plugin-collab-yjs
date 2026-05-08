@@ -12,8 +12,9 @@ import type {
 	SnapshotMeta,
 } from "@anvilkit/plugin-version-history";
 import type { Config, PuckApi } from "@puckeditor/core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createDebouncedAdapter } from "../debounced-adapter.js";
 import { createCollabPlugin } from "../plugin.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
@@ -276,6 +277,59 @@ describe("createCollabPlugin", () => {
 		expect(dispatch).toHaveBeenCalledWith({
 			type: "setData",
 			data: irToPuckData(replacement),
+		});
+	});
+
+	describe("with createDebouncedAdapter wrapper", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("coalesces a burst of onDataChange writes into a single underlying save", async () => {
+			const adapter = fakeAdapter();
+			const debounced = createDebouncedAdapter(adapter, { ms: 100 });
+			const dispatch = vi.fn();
+			const ctx = createFakeStudioContext({
+				getPuckApi: vi.fn(
+					() => ({ dispatch }) as unknown as PuckApi,
+				) as unknown as StudioPluginContext["getPuckApi"],
+			});
+			const harness = await registerPlugin(
+				createCollabPlugin({ adapter: debounced, puckConfig: STUB_CONFIG }),
+				{ ctx },
+			);
+			await harness.runInit();
+
+			// 10 rapid local edits within the debounce window. Each
+			// edit produces a distinct PuckData via irToPuckData so the
+			// debouncer must keep the latest one rather than dedup
+			// identical writes.
+			for (let i = 0; i < 10; i++) {
+				const ir = createFakePageIR();
+				const puckData = irToPuckData(ir);
+				const stamped = {
+					...(puckData as Record<string, unknown>),
+					content: [{ type: "Hero", props: { headline: `burst-${i}` } }],
+				};
+				await harness.registration.hooks?.onDataChange?.(ctx, stamped);
+				await vi.advanceTimersByTimeAsync(5);
+			}
+
+			// During the burst, the underlying adapter has not yet been
+			// flushed (only the first 50ms of the 100ms debounce window
+			// has elapsed when the loop ends).
+			expect(adapter.savedIRs).toHaveLength(0);
+
+			await vi.advanceTimersByTimeAsync(150);
+
+			// One coalesced write reaches the underlying adapter,
+			// regardless of how many onDataChange events fired during
+			// the burst (target ratio: ≤ 0.5 vs un-debounced from PRD
+			// §3.1 acceptance criteria).
+			expect(adapter.savedIRs).toHaveLength(1);
 		});
 	});
 
