@@ -1,7 +1,7 @@
 {
 	"name": "@anvilkit/plugin-collab-yjs",
-	"version": "0.2.0-beta.0",
-	"description": "Alpha-channel Yjs CRDT collaboration plugin for Anvilkit Studio. Implements the SnapshotAdapter v2 contract over a host-provided transport.",
+	"version": "0.9.0-rc.0",
+	"description": "Release-candidate Yjs CRDT collaboration plugin for Anvilkit Studio. Implements the SnapshotAdapter v2 contract over a host-provided transport, with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree, a connection-state contract, and force-resync.",
 	"type": "module",
 	"main": "./dist/index.cjs",
 	"module": "./dist/index.js",
@@ -36,7 +36,7 @@
 	"private": false,
 	"publishConfig": {
 		"access": "public",
-		"tag": "beta"
+		"tag": "next"
 	},
 	"peerDependencies": {
 		"@puckeditor/core": "^0.21.0",
