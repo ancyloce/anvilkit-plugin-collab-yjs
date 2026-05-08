@@ -6,15 +6,18 @@ import type {
 } from "@anvilkit/core/types";
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 
-import type { CreateCollabPluginOptions } from "./types.js";
+import type {
+	CreateCollabPluginOptions,
+	ValidationFailure,
+} from "./types.js";
 
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
-	name: "Collab (Yjs alpha)",
-	version: "0.1.0-alpha.0",
+	name: "Collab (Yjs beta)",
+	version: "0.2.0-beta.0",
 	coreVersion: "^0.1.0-alpha",
 	description:
-		"Alpha-channel realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract.",
+		"Beta-channel realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, and an opt-in native Y.Map IR tree for per-node merge.",
 } as const;
 
 /**
@@ -53,7 +56,7 @@ export function createCollabPlugin(
 							return;
 						}
 						unsubscribe = options.adapter.subscribe((ir) => {
-							dispatchRemoteIR(initCtx, ir, pendingRemoteDataKeys);
+							dispatchRemoteIR(initCtx, ir, pendingRemoteDataKeys, options);
 						});
 						await hydrateLatestSnapshot(
 							initCtx,
@@ -92,7 +95,7 @@ async function hydrateLatestSnapshot(
 		const latest = snapshots.at(-1);
 		if (!latest) return;
 		const ir = await Promise.resolve(options.adapter.load(latest.id));
-		dispatchRemoteIR(ctx, ir, pendingRemoteDataKeys);
+		dispatchRemoteIR(ctx, ir, pendingRemoteDataKeys, options);
 	} catch (error) {
 		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
 			error: error instanceof Error ? error.message : String(error),
@@ -104,8 +107,11 @@ function dispatchRemoteIR(
 	ctx: StudioPluginContext,
 	ir: PageIR,
 	pendingRemoteDataKeys: string[],
+	options: CreateCollabPluginOptions,
 ): void {
-	const data = irToPuckData(ir);
+	const validated = runValidation(ctx, ir, options);
+	if (validated === null) return;
+	const data = irToPuckData(validated);
 	pendingRemoteDataKeys.push(stableStringify(data));
 	try {
 		ctx.getPuckApi().dispatch({ type: "setData", data });
@@ -115,6 +121,38 @@ function dispatchRemoteIR(
 			error,
 		});
 	}
+}
+
+function runValidation(
+	ctx: StudioPluginContext,
+	ir: PageIR,
+	options: CreateCollabPluginOptions,
+): PageIR | null {
+	if (!options.validateRemoteIR) return ir;
+	let failure: ValidationFailure | undefined;
+	try {
+		const result = options.validateRemoteIR(ir);
+		if (result === null) {
+			failure = { kind: "rejected" };
+		} else {
+			return result;
+		}
+	} catch (error) {
+		failure = { kind: "threw", error };
+	}
+	if (failure) {
+		ctx.log("warn", "plugin-collab-yjs: remote IR rejected by validator.", {
+			kind: failure.kind,
+			error:
+				failure.error instanceof Error
+					? failure.error.message
+					: failure.error !== undefined
+						? String(failure.error)
+						: undefined,
+		});
+		options.onValidationFailure?.(failure);
+	}
+	return null;
 }
 
 function consumePendingRemoteData(
