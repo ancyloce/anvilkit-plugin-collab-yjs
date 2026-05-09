@@ -63,7 +63,12 @@ export function usePuckSelection(): PresenceSelection | null {
 	return usePuckSelection(selectPresenceSelection);
 }
 
-function selectPresenceSelection(state: {
+/**
+ * Pure projection from Puck's selector state to `PresenceSelection`.
+ * Exported so unit tests can exercise the selection rules without
+ * mounting the editor.
+ */
+export function selectPresenceSelection(state: {
 	readonly selectedItem: PuckComponentData | null;
 }): PresenceSelection | null {
 	const item = state.selectedItem;

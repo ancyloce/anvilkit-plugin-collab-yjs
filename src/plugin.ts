@@ -1,15 +1,21 @@
 import type {
 	PageIR,
+	PageIRNode,
 	StudioPlugin,
 	StudioPluginContext,
 	StudioPluginRegistration,
 } from "@anvilkit/core/types";
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
+import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
 import type {
+	CollabPolicy,
 	CreateCollabPluginOptions,
+	PolicyViolation,
 	ValidationFailure,
 } from "./types.js";
+
+const FALLBACK_LOCAL_PEER: PeerInfo = { id: "local" };
 
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
@@ -55,8 +61,14 @@ export function createCollabPlugin(
 							);
 							return;
 						}
-						unsubscribe = options.adapter.subscribe((ir) => {
-							dispatchRemoteIR(initCtx, ir, pendingRemoteDataKeys, options);
+						unsubscribe = options.adapter.subscribe((ir, peer) => {
+							dispatchRemoteIR(
+								initCtx,
+								ir,
+								pendingRemoteDataKeys,
+								options,
+								peer,
+							);
 						});
 						await hydrateLatestSnapshot(
 							initCtx,
@@ -64,12 +76,28 @@ export function createCollabPlugin(
 							pendingRemoteDataKeys,
 						);
 					},
-					onDataChange(_changeCtx, data) {
+					onDataChange(changeCtx, data) {
 						if (consumePendingRemoteData(data, pendingRemoteDataKeys)) {
 							return;
 						}
 						if (!options.puckConfig) return;
 						const ir = puckDataToIR(data, options.puckConfig);
+						const localPeer = options.localPeer ?? FALLBACK_LOCAL_PEER;
+						const violation = enforcePolicy(
+							ir,
+							localPeer,
+							options.policy,
+							"outbound",
+						);
+						if (violation) {
+							changeCtx.log(
+								"warn",
+								"plugin-collab-yjs: outbound save blocked by policy.canEdit.",
+								{ nodeIds: violation.nodeIds },
+							);
+							options.onPolicyViolation?.(violation);
+							return;
+						}
 						options.adapter.save(ir, {});
 					},
 					onDestroy() {
@@ -112,9 +140,26 @@ function dispatchRemoteIR(
 	ir: PageIR,
 	pendingRemoteDataKeys: string[],
 	options: CreateCollabPluginOptions,
+	peer?: PeerInfo,
 ): void {
 	const validated = runValidation(ctx, ir, options);
 	if (validated === null) return;
+	const checkedPeer = peer ?? options.localPeer ?? FALLBACK_LOCAL_PEER;
+	const violation = enforcePolicy(
+		validated,
+		checkedPeer,
+		options.policy,
+		"inbound",
+	);
+	if (violation) {
+		ctx.log(
+			"warn",
+			"plugin-collab-yjs: inbound dispatch blocked by policy.canEdit.",
+			{ nodeIds: violation.nodeIds },
+		);
+		options.onPolicyViolation?.(violation);
+		return;
+	}
 	const data = irToPuckData(validated);
 	pendingRemoteDataKeys.push(stableStringify(data));
 	try {
@@ -125,6 +170,37 @@ function dispatchRemoteIR(
 			error,
 		});
 	}
+}
+
+function enforcePolicy(
+	ir: PageIR,
+	peer: PeerInfo,
+	policy: CollabPolicy | undefined,
+	direction: "inbound" | "outbound",
+): PolicyViolation | undefined {
+	if (!policy) return undefined;
+	const rejected: string[] = [];
+	let failureError: unknown;
+	walkNodes(ir.root, (node) => {
+		try {
+			if (!policy.canEdit(node, peer)) rejected.push(node.id);
+		} catch (error) {
+			failureError = error;
+			rejected.push(node.id);
+		}
+	});
+	if (rejected.length === 0) return undefined;
+	return {
+		direction,
+		nodeIds: rejected,
+		peer,
+		error: failureError,
+	};
+}
+
+function walkNodes(node: PageIRNode, visit: (node: PageIRNode) => void): void {
+	visit(node);
+	if (node.children) for (const child of node.children) walkNodes(child, visit);
 }
 
 function runValidation(

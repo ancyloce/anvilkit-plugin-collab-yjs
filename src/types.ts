@@ -1,4 +1,4 @@
-import type { PageIR } from "@anvilkit/core/types";
+import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type {
 	PeerInfo,
 	SnapshotAdapter,
@@ -93,6 +93,55 @@ export interface ConflictEvent {
 }
 
 /**
+ * Phase 3 (D10) observability snapshot. The adapter maintains lightweight
+ * counters and a sliding window of sync latencies; `metrics()` returns a
+ * point-in-time view that hosts can stream to telemetry sinks (the docs
+ * canary, Datadog, OpenTelemetry, etc.).
+ *
+ * Latency is measured from the moment a local `save` writes the live
+ * `pageIR` key to the moment any peer's observer fires for that update.
+ * Samples are recorded against the most-recent local save; remote-only
+ * traffic (no local save in the staleness window) is excluded. The
+ * window holds the last 200 samples — older samples are evicted FIFO.
+ */
+export interface MetricsSnapshot {
+	/** Number of `save` calls invoked on the adapter since creation. */
+	readonly saveCount: number;
+	/**
+	 * Number of save calls observed at the underlying transport layer
+	 * (i.e. that produced a Yjs update). When the adapter is wrapped
+	 * with `createDebouncedAdapter`, this stays equal to `saveCount`
+	 * because every flushed `save()` reaches the underlying adapter
+	 * once. The `saveCoalescingRatio` field is populated by the
+	 * debouncer wrapper when wrapped; for the raw adapter it is `1`.
+	 */
+	readonly transportWrites: number;
+	/**
+	 * `transportWrites / saveCount`. `1` means no coalescing; `0.5`
+	 * means half of all `save()` calls were dropped by an upstream
+	 * debouncer wrapper. Held at `1` for the raw adapter.
+	 */
+	readonly saveCoalescingRatio: number;
+	/** Number of remote subscribe-callback invocations that threw. */
+	readonly dispatchFailures: number;
+	/**
+	 * Number of awareness change events observed since adapter
+	 * creation. A coarse proxy for presence churn — high values during
+	 * idle periods point to a presence-spamming peer or a host that
+	 * isn't throttling cursor updates.
+	 */
+	readonly awarenessChurn: number;
+	/** p50 (median) sync latency in milliseconds, or `null` if no samples. */
+	readonly syncLatencyP50Ms: number | null;
+	/** p95 sync latency in milliseconds, or `null` if no samples. */
+	readonly syncLatencyP95Ms: number | null;
+	/** Number of latency samples retained in the window. */
+	readonly syncLatencySamples: number;
+	/** Set when the adapter fell back to legacy `pageIR` after native-tree decode failed. */
+	readonly degraded: boolean;
+}
+
+/**
  * Yjs-specific extension of `SnapshotAdapter` that exposes the
  * conflict-diagnostics event surface, the connection-state contract,
  * and the force-resync action. `createYjsAdapter` returns this narrow
@@ -129,6 +178,13 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
 	 */
 	readonly forceResync: () => Promise<PageIR | null>;
 	/**
+	 * Phase 3 (D10) observability snapshot. Cheap to call — it copies
+	 * the latency window into a sorted scratch array on each invocation,
+	 * which is fine at the host's polling cadence (seconds, not
+	 * frames). Hosts stream the snapshot to their telemetry sink.
+	 */
+	readonly metrics: () => MetricsSnapshot;
+	/**
 	 * Release internal subscriptions (the optional `connectionSource`
 	 * tear-down, status/conflict/subscribe listener sets). Hosts using
 	 * `createCollabPlugin` do not need to call this directly — the
@@ -144,6 +200,39 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
  * against hostile or buggy peers — every transport is treated as untrusted.
  */
 export type ValidateRemoteIR = (ir: PageIR) => PageIR | null;
+
+/**
+ * Phase 3 (D6) RBAC + lock policy bridge.
+ *
+ * `canEdit(node, peer)` is consulted symmetrically:
+ *
+ * - **Outbound** — before `adapter.save`, every node touched by the
+ *   local diff is checked against `policy.canEdit(node, localPeer)`.
+ *   If any check returns `false` (or throws), the save is rejected
+ *   and `onPolicyViolation` fires with `direction: "outbound"`.
+ * - **Inbound** — after `validateRemoteIR`, every node in the
+ *   incoming IR is checked against
+ *   `policy.canEdit(node, remotePeer ?? localPeer)`. Any rejection
+ *   drops the dispatch and fires `onPolicyViolation` with
+ *   `direction: "inbound"`.
+ *
+ * Synchronous throws from `canEdit` are treated as denial. The hook
+ * runs against the *whole* IR rather than a structured diff for
+ * simplicity at this phase; richer per-node diffs can come in Phase 4.
+ */
+export interface CollabPolicy {
+	readonly canEdit: (node: PageIRNode, peer: PeerInfo) => boolean;
+}
+
+/**
+ * Reasons a save or dispatch was rejected by `policy.canEdit`.
+ */
+export interface PolicyViolation {
+	readonly direction: "inbound" | "outbound";
+	readonly nodeIds: readonly string[];
+	readonly peer: PeerInfo;
+	readonly error?: unknown;
+}
 
 /**
  * Reasons a remote update was rejected after `validateRemoteIR` ran.
@@ -168,6 +257,22 @@ export interface CreateCollabPluginOptions {
 	 * surfacing toasts in host UI. Fires after the warning is logged.
 	 */
 	readonly onValidationFailure?: (failure: ValidationFailure) => void;
+	/**
+	 * Phase 3 (D6) policy bridge. Applied symmetrically inbound and
+	 * outbound — see {@link CollabPolicy} for semantics.
+	 */
+	readonly policy?: CollabPolicy;
+	/**
+	 * Local peer identity used when checking outbound saves and as a
+	 * fallback for inbound checks when the remote peer is unknown. If
+	 * omitted, `policy.canEdit` is invoked with `{ id: "local" }`.
+	 */
+	readonly localPeer?: PeerInfo;
+	/**
+	 * Optional callback fired whenever `policy.canEdit` rejects an
+	 * outbound save or an inbound dispatch.
+	 */
+	readonly onPolicyViolation?: (violation: PolicyViolation) => void;
 }
 
 export interface CollabPluginRuntime {
