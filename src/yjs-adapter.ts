@@ -12,6 +12,7 @@ import * as Y from "yjs";
 import { decodeIR, encodeIR, hashIR } from "./encode.js";
 import {
 	applyIRToNativeTree,
+	NATIVE_VERSION_KEY,
 	readNativeTree,
 } from "./native-tree.js";
 import { validatePeerInfo, validatePresenceState } from "./presence-schema.js";
@@ -19,8 +20,11 @@ import type {
 	ConflictEvent,
 	ConnectionStatus,
 	CreateYjsAdapterOptions,
+	MetricsSnapshot,
 	YjsSnapshotAdapter,
 } from "./types.js";
+
+const LATENCY_WINDOW_SIZE = 200;
 
 const DEFAULT_MAP_NAME = "anvilkit-collab";
 const PAGE_IR_KEY = "pageIR";
@@ -53,9 +57,7 @@ export function createYjsAdapter(
 	const staleAfterMs = options.staleAfterMs ?? 2000;
 	const useNativeTree = options.useNativeTree ?? false;
 	const conflictListeners = new Set<(event: ConflictEvent) => void>();
-	const subscribeListeners = new Set<
-		(ir: PageIR, peer?: PeerInfo) => void
-	>();
+	const subscribeListeners = new Set<(ir: PageIR, peer?: PeerInfo) => void>();
 	const statusListeners = new Set<(status: ConnectionStatus) => void>();
 	let currentStatus: ConnectionStatus = { kind: "connecting" };
 	let unsubscribeConnectionSource: (() => void) | undefined;
@@ -67,17 +69,31 @@ export function createYjsAdapter(
 	let lastLocalSavedAt: number | undefined;
 	let lastLocalIR: PageIR | undefined;
 	const treeRoot = useNativeTree
-		? options.doc.getMap<unknown>(
-				`${options.mapName ?? DEFAULT_MAP_NAME}:tree`,
-			)
+		? options.doc.getMap<unknown>(`${options.mapName ?? DEFAULT_MAP_NAME}:tree`)
 		: undefined;
+	let saveCount = 0;
+	let dispatchFailures = 0;
+	let awarenessChurn = 0;
+	let degraded = false;
+	const latencyWindow: number[] = [];
 
-	const observer = (
-		event: Y.YMapEvent<string>,
-		transaction: Y.Transaction,
-	) => {
+	function recordLatencySample(savedAt: number): void {
+		const elapsed = Date.now() - savedAt;
+		if (!Number.isFinite(elapsed) || elapsed < 0) return;
+		latencyWindow.push(elapsed);
+		if (latencyWindow.length > LATENCY_WINDOW_SIZE) latencyWindow.shift();
+	}
+
+	awareness.on("change", () => {
+		awarenessChurn += 1;
+	});
+
+	const observer = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
 		if (!event.changes.keys.has(PAGE_IR_KEY)) return;
 		if (isLocalOrigin(transaction.origin, localPeer)) return;
+		if (lastLocalSavedAt !== undefined) {
+			recordLatencySample(lastLocalSavedAt);
+		}
 		const peer = event.changes.keys.has(LAST_PEER_KEY)
 			? readLastPeer(map)
 			: undefined;
@@ -89,6 +105,7 @@ export function createYjsAdapter(
 			try {
 				listener(remoteIR, peer);
 			} catch {
+				dispatchFailures += 1;
 				// listener errors must not prevent other listeners from
 				// receiving the same update.
 			}
@@ -117,6 +134,12 @@ export function createYjsAdapter(
 		if (treeRoot) {
 			const fromTree = readNativeTree(treeRoot);
 			if (fromTree) return fromTree;
+			// Native tree was opted in but failed to decode despite
+			// holding tree data — fall back to the legacy `pageIR` JSON
+			// blob and flag the adapter as degraded so hosts can surface
+			// the regression. An empty tree (no version key set yet) is
+			// the normal pre-hydration state and is NOT flagged.
+			if (treeRoot.has(NATIVE_VERSION_KEY)) degraded = true;
 		}
 		const raw = map.get(PAGE_IR_KEY);
 		if (typeof raw !== "string") return undefined;
@@ -171,6 +194,7 @@ export function createYjsAdapter(
 			}, localPeer);
 			lastLocalIR = ir;
 			lastLocalSavedAt = Date.now();
+			saveCount += 1;
 			return snapshotMeta.id;
 		},
 		list() {
@@ -199,10 +223,7 @@ export function createYjsAdapter(
 		},
 		subscribe(onUpdate: (ir: PageIR, peer?: PeerInfo) => void): Unsubscribe {
 			subscribeListeners.add(onUpdate);
-			if (
-				!options.connectionSource &&
-				currentStatus.kind === "connecting"
-			) {
+			if (!options.connectionSource && currentStatus.kind === "connecting") {
 				emitStatus({ kind: "synced", since: new Date().toISOString() });
 			}
 			return () => {
@@ -253,6 +274,22 @@ export function createYjsAdapter(
 				}
 			}
 			return restored;
+		},
+		metrics(): MetricsSnapshot {
+			const sorted = [...latencyWindow].sort((a, b) => a - b);
+			const p50 = percentile(sorted, 0.5);
+			const p95 = percentile(sorted, 0.95);
+			return {
+				saveCount,
+				transportWrites: saveCount,
+				saveCoalescingRatio: 1,
+				dispatchFailures,
+				awarenessChurn,
+				syncLatencyP50Ms: p50,
+				syncLatencyP95Ms: p95,
+				syncLatencySamples: sorted.length,
+				degraded,
+			};
 		},
 		destroy() {
 			unsubscribeConnectionSource?.();
@@ -448,4 +485,17 @@ function createSnapshotId(): string {
 	const counter = snapshotCounter;
 	snapshotCounter += 1;
 	return `snap-${Date.now().toString(36)}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function percentile(sorted: readonly number[], q: number): number | null {
+	if (sorted.length === 0) return null;
+	if (sorted.length === 1) return sorted[0] ?? null;
+	const rank = (sorted.length - 1) * q;
+	const lower = Math.floor(rank);
+	const upper = Math.ceil(rank);
+	const lowerValue = sorted[lower];
+	const upperValue = sorted[upper];
+	if (lowerValue === undefined || upperValue === undefined) return null;
+	if (lower === upper) return lowerValue;
+	return lowerValue + (upperValue - lowerValue) * (rank - lower);
 }
