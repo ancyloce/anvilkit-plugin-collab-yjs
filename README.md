@@ -44,10 +44,18 @@ registerPlugins([
   createCollabPlugin({
     adapter: debounced,
     puckConfig: myPuckConfig,
+    // REQUIRED for multi-peer rooms. Omitting localPeer makes the
+    // plugin mint an ephemeral `local-<uuid>` id and log a warning,
+    // but a stable id per user is necessary for conflict attribution,
+    // policy enforcement, and presence cursors.
+    localPeer: { id: "alice", displayName: "Alice", color: "#f43f5e" },
     // Defense-in-depth — every transport is treated as untrusted.
     // Returning null or throwing rejects the remote update.
     validateRemoteIR: (ir) => (isWellFormed(ir) ? ir : null),
     onValidationFailure: (failure) => toast(`Rejected: ${failure.kind}`),
+    // Surface outbound transport failures (network blip, backend
+    // 5xx, etc.) so they don't disappear into unhandledRejection.
+    onSaveError: (error) => toast(`Save failed: ${error}`),
   }),
 ]);
 
@@ -90,3 +98,22 @@ node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
 
 A production-grade `hocuspocus` recipe (auth, persistence, scale-out)
 ships in Phase 2 (GA Core).
+
+## Stabilization round 2026-05-13 (`0.9.0-rc.1`)
+
+This release closed the lifecycle, echo-detection, and peer-fallback
+defects raised in the 2026-05-13 code review, plus tightened metrics,
+presence security, and the `yjs-adapter` internal architecture. See
+[CHANGELOG.md](./CHANGELOG.md) for the full list. Key behavior changes
+for hosts:
+
+- `createDebouncedAdapter` now has a `destroy()` method — call it on
+  unmount to cancel pending timers and forward teardown.
+- `createCollabPlugin({ onSaveError })` lets you surface outbound save
+  failures (previously they became unhandled rejections).
+- Omitting `localPeer` now mints a per-instance ephemeral id with a
+  warn log instead of colliding all clients on `id: "local"`.
+- `validatePeerInfo` now enforces a color allowlist and a 64-char
+  displayName cap with control-character stripping.
+- `MetricsSnapshot` gains `presenceValidationFailures`; the
+  `awarenessChurn` counter is now a 60-second sliding window.

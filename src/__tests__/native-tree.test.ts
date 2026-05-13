@@ -8,13 +8,16 @@
 import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
-import {
-	applyUpdate,
-	Doc as YDoc,
-	encodeStateAsUpdate,
-} from "yjs";
+import * as Y from "yjs";
+import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-import { readNativeTree } from "../native-tree.js";
+import {
+	applyIRToNativeTree,
+	NATIVE_NODE_PREFIX,
+	NATIVE_ROOT_ID_KEY,
+	NATIVE_VERSION_KEY,
+	readNativeTree,
+} from "../native-tree.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
@@ -72,17 +75,11 @@ describe("createYjsAdapter useNativeTree", () => {
 		// the other's update when each constructs its save IR. This is
 		// the canonical CRDT concurrency scenario.
 		adapterA.save(
-			withTwoNodes(
-				{ headline: "Alice's Hero" },
-				{ label: "Initial Button" },
-			),
+			withTwoNodes({ headline: "Alice's Hero" }, { label: "Initial Button" }),
 			{},
 		);
 		adapterB.save(
-			withTwoNodes(
-				{ headline: "Initial Hero" },
-				{ label: "Bob's Button" },
-			),
+			withTwoNodes({ headline: "Initial Hero" }, { label: "Bob's Button" }),
 			{},
 		);
 
@@ -146,17 +143,11 @@ describe("createYjsAdapter useNativeTree", () => {
 		pair(docA, docB);
 
 		adapterA.save(
-			withTwoNodes(
-				{ headline: "Alice's Hero" },
-				{ label: "Initial Button" },
-			),
+			withTwoNodes({ headline: "Alice's Hero" }, { label: "Initial Button" }),
 			{},
 		);
 		adapterB.save(
-			withTwoNodes(
-				{ headline: "Initial Hero" },
-				{ label: "Bob's Button" },
-			),
+			withTwoNodes({ headline: "Initial Hero" }, { label: "Bob's Button" }),
 			{},
 		);
 
@@ -179,5 +170,144 @@ describe("createYjsAdapter useNativeTree", () => {
 		// Pin the alpha-cycle behavior: at least ONE of the disjoint
 		// edits lost. This is exactly what D1 (useNativeTree) fixes.
 		expect(heroOk && buttonOk).toBe(false);
+	});
+});
+
+describe("readNativeTree negative paths (H4)", () => {
+	it("returns undefined when the version key is missing", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_ROOT_ID_KEY, "r");
+		expect(readNativeTree(root)).toBeUndefined();
+	});
+
+	it("returns undefined when the version key is not exactly '1'", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "2");
+		root.set(NATIVE_ROOT_ID_KEY, "r");
+		expect(readNativeTree(root)).toBeUndefined();
+	});
+
+	it("returns undefined when rootId is missing", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "1");
+		expect(readNativeTree(root)).toBeUndefined();
+	});
+
+	it("returns undefined when rootId points to a non-existent node", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "1");
+		root.set(NATIVE_ROOT_ID_KEY, "missing-node");
+		expect(readNativeTree(root)).toBeUndefined();
+	});
+
+	it("decodes a node with malformed props Y.Map as a node with empty props", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "1");
+		root.set(NATIVE_ROOT_ID_KEY, "r");
+		const nodeMap = new Y.Map<unknown>();
+		nodeMap.set("id", "r");
+		nodeMap.set("type", "Root");
+		// `props` slot is intentionally a string, not a Y.Map. readNode
+		// must tolerate the malformation by returning empty props.
+		nodeMap.set("props", "this-is-not-a-y-map");
+		root.set(`${NATIVE_NODE_PREFIX}r`, nodeMap);
+		const decoded = readNativeTree(root);
+		expect(decoded?.root.props).toEqual({});
+	});
+
+	it("decodes a node with malformed childIds Y.Array as a node with no children", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "1");
+		root.set(NATIVE_ROOT_ID_KEY, "r");
+		const nodeMap = new Y.Map<unknown>();
+		nodeMap.set("id", "r");
+		nodeMap.set("type", "Root");
+		nodeMap.set("childIds", "not-a-y-array");
+		root.set(`${NATIVE_NODE_PREFIX}r`, nodeMap);
+		const decoded = readNativeTree(root);
+		expect(decoded?.root.children).toBeUndefined();
+	});
+
+	it("drops malformed JSON-encoded prop values without rejecting the node", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		root.set(NATIVE_VERSION_KEY, "1");
+		root.set(NATIVE_ROOT_ID_KEY, "r");
+		const nodeMap = new Y.Map<unknown>();
+		nodeMap.set("id", "r");
+		nodeMap.set("type", "Root");
+		const propsMap = new Y.Map<unknown>();
+		propsMap.set("good", JSON.stringify("ok"));
+		propsMap.set("bad", "this-is-not-valid-json");
+		nodeMap.set("props", propsMap);
+		root.set(`${NATIVE_NODE_PREFIX}r`, nodeMap);
+		const decoded = readNativeTree(root);
+		expect(decoded?.root.props).toEqual({ good: "ok" });
+	});
+
+	it("round-trips a PageIRNode with assets, meta, slot, and slotKind set", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		const ir: PageIR = {
+			version: "1",
+			root: {
+				id: "r",
+				type: "Root",
+				props: { x: 1 },
+				slot: "main",
+				slotKind: "list",
+				assets: [],
+				meta: { i18nKey: "page.title", author: "alice" },
+				children: [],
+			},
+			assets: [{ id: "asset-1", kind: "image", src: "/x.png", alt: "" }],
+			metadata: { createdAt: new Date(0).toISOString() },
+		};
+		applyIRToNativeTree(root, ir, undefined);
+		const decoded = readNativeTree(root);
+		expect(decoded?.root.slot).toBe("main");
+		expect(decoded?.root.slotKind).toBe("list");
+		expect(decoded?.root.meta).toEqual({
+			i18nKey: "page.title",
+			author: "alice",
+		});
+		expect(decoded?.assets).toEqual(ir.assets);
+		expect(decoded?.metadata).toEqual(ir.metadata);
+	});
+
+	it("handles a deeply nested children array (10 levels) without overflow", () => {
+		const doc = new YDoc();
+		const root = doc.getMap<unknown>(TREE_MAP);
+		let tail: PageIRNode = { id: "leaf-10", type: "Leaf", props: {} };
+		for (let i = 9; i >= 0; i -= 1) {
+			tail = {
+				id: `level-${i}`,
+				type: "Wrap",
+				props: {},
+				children: [tail],
+			};
+		}
+		const ir: PageIR = {
+			version: "1",
+			root: tail,
+			assets: [],
+			metadata: {},
+		};
+		applyIRToNativeTree(root, ir, undefined);
+		const decoded = readNativeTree(root);
+		expect(decoded).toBeDefined();
+		// Walk down to verify all 10 levels survived.
+		let cursor: PageIRNode | undefined = decoded?.root;
+		for (let i = 0; i < 10; i += 1) {
+			expect(cursor?.id).toBe(`level-${i}`);
+			cursor = cursor?.children?.[0];
+		}
+		expect(cursor?.id).toBe("leaf-10");
 	});
 });

@@ -36,9 +36,14 @@ interface PendingSave {
  * `createDebouncedAdapter` and the return type — when the upstream
  * adapter exposes `metrics()`, the debouncer overlays its own
  * coalescing ratio on top of the upstream snapshot.
+ *
+ * When the upstream adapter exposes `destroy()`, the debouncer
+ * forwards teardown to it so hosts that wrap a `YjsSnapshotAdapter`
+ * get clean unobserve-on-unmount semantics through a single call.
  */
 export type SnapshotAdapterWithMetrics = SnapshotAdapter & {
 	readonly metrics?: () => MetricsSnapshot;
+	readonly destroy?: () => void;
 };
 
 /**
@@ -50,7 +55,19 @@ export type SnapshotAdapterWithMetrics = SnapshotAdapter & {
  * Backpressure target: slider drags, rapid typing, and bulk operations.
  * Underlying adapter behavior is preserved for `list`, `load`, `delete`,
  * `subscribe`, and `presence`.
+ *
+ * `destroy()` cancels the pending flush timer, rejects any in-flight
+ * `save()` promises with `DebouncedAdapterDestroyedError`, and forwards
+ * teardown to the upstream adapter's optional `destroy`. Hosts MUST call
+ * it on unmount to avoid pending timers firing into a torn-down state.
  */
+export class DebouncedAdapterDestroyedError extends Error {
+	constructor() {
+		super("plugin-collab-yjs: debounced adapter destroyed before flush");
+		this.name = "DebouncedAdapterDestroyedError";
+	}
+}
+
 export function createDebouncedAdapter(
 	adapter: SnapshotAdapterWithMetrics,
 	options: CreateDebouncedAdapterOptions = {},
@@ -85,8 +102,29 @@ export function createDebouncedAdapter(
 		}
 	}
 
+	let destroyed = false;
+
+	function destroy(): void {
+		if (destroyed) return;
+		destroyed = true;
+		if (timer !== undefined) {
+			clearTimer(timer);
+			timer = undefined;
+		}
+		if (pending) {
+			const error = new DebouncedAdapterDestroyedError();
+			const current = pending;
+			pending = undefined;
+			for (const reject of current.rejecters) reject(error);
+		}
+		adapter.destroy?.();
+	}
+
 	return {
 		save(ir, meta) {
+			if (destroyed) {
+				return Promise.reject(new DebouncedAdapterDestroyedError());
+			}
 			saveCalls += 1;
 			return new Promise<string>((resolve, reject) => {
 				if (pending) {
@@ -108,6 +146,7 @@ export function createDebouncedAdapter(
 		delete: adapter.delete?.bind(adapter),
 		subscribe: adapter.subscribe?.bind(adapter),
 		presence: adapter.presence,
+		destroy,
 		metrics: adapter.metrics
 			? (): MetricsSnapshot => {
 					const upstream = adapter.metrics?.();
@@ -123,6 +162,7 @@ export function createDebouncedAdapter(
 							syncLatencyP95Ms: null,
 							syncLatencySamples: 0,
 							degraded: false,
+							presenceValidationFailures: 0,
 						};
 					}
 					return {

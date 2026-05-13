@@ -1,6 +1,6 @@
 {
 	"name": "@anvilkit/plugin-collab-yjs",
-	"version": "0.9.0-rc.0",
+	"version": "0.9.0-rc.1",
 	"description": "Release-candidate Yjs CRDT collaboration plugin for Anvilkit Studio. Implements the SnapshotAdapter v2 contract over a host-provided transport, with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree, a connection-state contract, and force-resync.",
 	"type": "module",
 	"main": "./dist/index.cjs",
@@ -70,6 +70,7 @@
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"test:integration": "vitest run --config vitest.integration.config.ts",
 		"publint": "publint",
 		"check:publint": "publint",
 		"check:circular": "madge --circular --extensions ts src/",

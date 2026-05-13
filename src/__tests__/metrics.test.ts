@@ -9,7 +9,8 @@
 import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PageIR } from "@anvilkit/core/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyUpdate, Doc as YDoc } from "yjs";
+import { Awareness } from "y-protocols/awareness";
+import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 import { createDebouncedAdapter } from "../debounced-adapter.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
@@ -174,6 +175,71 @@ describe("createYjsAdapter metrics()", () => {
 		// doc the tree has no version key yet, so degraded must stay
 		// false.
 		expect(adapter.metrics().degraded).toBe(false);
+	});
+
+	// M3 — flip degraded when the native tree decode fails despite holding data.
+	it("flips degraded when the native tree holds a version key but fails to decode", () => {
+		const doc = new YDoc();
+		const treeRoot = doc.getMap<unknown>("anvilkit-collab:tree");
+		treeRoot.set("version", "not-a-version");
+		const adapter = createYjsAdapter({
+			doc,
+			useNativeTree: true,
+			peer: { id: "alice" },
+		});
+		// Subscribe so the observer-driven dispatch path is wired and
+		// the connection-status FSM stays in `connecting` initially.
+		adapter.subscribe(vi.fn());
+
+		// Now trigger a remote write to PAGE_IR_KEY from another peer.
+		// The observer runs readCurrentIR which sees tree version
+		// "not-a-version" (!= "1"), readNativeTree returns undefined,
+		// and treeRoot.has("version") is true, so degraded flips to
+		// true.
+		const otherDoc = new YDoc();
+		const otherMap = otherDoc.getMap<string>("anvilkit-collab");
+		otherMap.set(
+			"pageIR",
+			JSON.stringify({
+				version: "1",
+				root: { id: "r2", type: "Root", props: {}, children: [] },
+				assets: [],
+				metadata: {},
+			}),
+		);
+		const otherPeer = { id: "bob" };
+		const update = encodeStateAsUpdate(otherDoc);
+		applyUpdate(doc, update, otherPeer);
+
+		expect(adapter.metrics().degraded).toBe(true);
+	});
+
+	// L7 — surfacing presence validation failures in metrics.
+	it("counts presence-validation failures and exposes them via metrics().presenceValidationFailures", () => {
+		const doc = new YDoc();
+		const awareness = new Awareness(doc);
+		const adapter = createYjsAdapter({
+			doc,
+			awareness,
+			peer: { id: "alice" },
+		});
+		// onPeerChange handler is what increments the counter, so we
+		// must subscribe before triggering an awareness state.
+		adapter.presence?.onPeerChange(vi.fn());
+
+		// Inject a malformed peer state (xss-style color) via raw
+		// awareness API. validatePresenceState rejects it; the counter
+		// must increment.
+		awareness.setLocalState({ peer: { id: "alice", color: "javascript:1" } });
+		expect(adapter.metrics().presenceValidationFailures).toBeGreaterThan(0);
+	});
+
+	it("starts presenceValidationFailures at 0", () => {
+		const adapter = createYjsAdapter({
+			doc: new YDoc(),
+			peer: { id: "alice" },
+		});
+		expect(adapter.metrics().presenceValidationFailures).toBe(0);
 	});
 });
 

@@ -15,12 +15,44 @@ import type {
 	ValidationFailure,
 } from "./types.js";
 
-const FALLBACK_LOCAL_PEER: PeerInfo = { id: "local" };
+/**
+ * Per-instance fallback peer id used when `options.localPeer` is omitted.
+ *
+ * The previous `{ id: "local" }` constant collided across every client
+ * that omitted `localPeer` — `isLocalOrigin` then treated remote
+ * transactions as local-origin and suppressed remote dispatch entirely.
+ * Each plugin instance now mints its own ephemeral id so a missing
+ * `localPeer` degrades to single-user-warned rather than silently
+ * collapsing multi-peer sessions to one fake user.
+ */
+function createEphemeralPeer(): PeerInfo {
+	const uuid =
+		typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+			? crypto.randomUUID()
+			: Math.random().toString(36).slice(2, 10);
+	return { id: `local-${uuid}` };
+}
+
+interface PendingRemoteEntry {
+	count: number;
+	addedAt: number;
+}
+
+const PENDING_REMOTE_MAX_AGE_MS = 60_000;
+
+function sweepPendingRemoteData(
+	pending: Map<string, PendingRemoteEntry>,
+	now: number,
+): void {
+	for (const [key, entry] of pending) {
+		if (now - entry.addedAt > PENDING_REMOTE_MAX_AGE_MS) pending.delete(key);
+	}
+}
 
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
 	name: "Collab (Yjs)",
-	version: "0.9.0-rc.0",
+	version: "0.9.0-rc.1",
 	coreVersion: "^0.1.0-alpha",
 	description:
 		"GA-candidate realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree for per-node merge, a transport-agnostic connection-state contract, and force-resync.",
@@ -45,7 +77,9 @@ export function createCollabPlugin(
 	options: CreateCollabPluginOptions,
 ): StudioPlugin {
 	let unsubscribe: (() => void) | undefined;
-	const pendingRemoteDataKeys: string[] = [];
+	const pendingRemoteData = new Map<string, PendingRemoteEntry>();
+	const ephemeralPeer = options.localPeer ?? createEphemeralPeer();
+	const usedEphemeralPeer = options.localPeer === undefined;
 
 	return {
 		meta: META,
@@ -54,6 +88,13 @@ export function createCollabPlugin(
 				meta: META,
 				hooks: {
 					async onInit(initCtx) {
+						if (usedEphemeralPeer) {
+							initCtx.log(
+								"warn",
+								"plugin-collab-yjs: options.localPeer omitted; generated ephemeral id. Provide a stable id for production.",
+								{ id: ephemeralPeer.id },
+							);
+						}
 						if (typeof options.adapter.subscribe !== "function") {
 							initCtx.log(
 								"warn",
@@ -65,24 +106,26 @@ export function createCollabPlugin(
 							dispatchRemoteIR(
 								initCtx,
 								ir,
-								pendingRemoteDataKeys,
+								pendingRemoteData,
 								options,
+								ephemeralPeer,
 								peer,
 							);
 						});
 						await hydrateLatestSnapshot(
 							initCtx,
 							options,
-							pendingRemoteDataKeys,
+							pendingRemoteData,
+							ephemeralPeer,
 						);
 					},
 					onDataChange(changeCtx, data) {
-						if (consumePendingRemoteData(data, pendingRemoteDataKeys)) {
+						if (consumePendingRemoteData(data, pendingRemoteData)) {
 							return;
 						}
 						if (!options.puckConfig) return;
 						const ir = puckDataToIR(data, options.puckConfig);
-						const localPeer = options.localPeer ?? FALLBACK_LOCAL_PEER;
+						const localPeer = ephemeralPeer;
 						const violation = enforcePolicy(
 							ir,
 							localPeer,
@@ -98,7 +141,29 @@ export function createCollabPlugin(
 							options.onPolicyViolation?.(violation);
 							return;
 						}
-						options.adapter.save(ir, {});
+						try {
+							const result = options.adapter.save(ir, {});
+							Promise.resolve(result).catch((error: unknown) => {
+								changeCtx.log(
+									"error",
+									"plugin-collab-yjs: outbound save failed.",
+									{
+										error:
+											error instanceof Error ? error.message : String(error),
+									},
+								);
+								options.onSaveError?.(error);
+							});
+						} catch (error) {
+							changeCtx.log(
+								"error",
+								"plugin-collab-yjs: outbound save threw synchronously.",
+								{
+									error: error instanceof Error ? error.message : String(error),
+								},
+							);
+							options.onSaveError?.(error);
+						}
 					},
 					onDestroy() {
 						if (unsubscribe) {
@@ -120,14 +185,15 @@ export function createCollabPlugin(
 async function hydrateLatestSnapshot(
 	ctx: StudioPluginContext,
 	options: CreateCollabPluginOptions,
-	pendingRemoteDataKeys: string[],
+	pendingRemoteData: Map<string, PendingRemoteEntry>,
+	localPeer: PeerInfo,
 ): Promise<void> {
 	try {
 		const snapshots = await Promise.resolve(options.adapter.list());
 		const latest = snapshots.at(-1);
 		if (!latest) return;
 		const ir = await Promise.resolve(options.adapter.load(latest.id));
-		dispatchRemoteIR(ctx, ir, pendingRemoteDataKeys, options);
+		dispatchRemoteIR(ctx, ir, pendingRemoteData, options, localPeer);
 	} catch (error) {
 		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
 			error: error instanceof Error ? error.message : String(error),
@@ -138,13 +204,14 @@ async function hydrateLatestSnapshot(
 function dispatchRemoteIR(
 	ctx: StudioPluginContext,
 	ir: PageIR,
-	pendingRemoteDataKeys: string[],
+	pendingRemoteData: Map<string, PendingRemoteEntry>,
 	options: CreateCollabPluginOptions,
+	localPeer: PeerInfo,
 	peer?: PeerInfo,
 ): void {
 	const validated = runValidation(ctx, ir, options);
 	if (validated === null) return;
-	const checkedPeer = peer ?? options.localPeer ?? FALLBACK_LOCAL_PEER;
+	const checkedPeer = peer ?? localPeer;
 	const violation = enforcePolicy(
 		validated,
 		checkedPeer,
@@ -161,11 +228,26 @@ function dispatchRemoteIR(
 		return;
 	}
 	const data = irToPuckData(validated);
-	pendingRemoteDataKeys.push(stableStringify(data));
+	const key = stableStringify(data);
+	const now = Date.now();
+	sweepPendingRemoteData(pendingRemoteData, now);
+	const existing = pendingRemoteData.get(key);
+	if (existing) {
+		existing.count += 1;
+		existing.addedAt = now;
+	} else {
+		pendingRemoteData.set(key, { count: 1, addedAt: now });
+	}
 	try {
 		ctx.getPuckApi().dispatch({ type: "setData", data });
 	} catch (error) {
-		pendingRemoteDataKeys.pop();
+		// Roll back the speculative count bump since the echo never made it
+		// into Puck's pipeline and no matching onDataChange will arrive.
+		const rollback = pendingRemoteData.get(key);
+		if (rollback) {
+			if (rollback.count <= 1) pendingRemoteData.delete(key);
+			else rollback.count -= 1;
+		}
 		ctx.log("error", "plugin-collab-yjs: remote update dispatch failed.", {
 			error,
 		});
@@ -181,10 +263,25 @@ function enforcePolicy(
 	if (!policy) return undefined;
 	const rejected: string[] = [];
 	let failureError: unknown;
+	// Memoize canEdit per (node.id, peer.id) for the duration of this
+	// single enforcePolicy call. Two adjacent calls on the same IR
+	// (e.g. inbound + outbound checks in the same dispatch round) each
+	// get their own cache — we deliberately do NOT cache cross-call so
+	// policy state changes between calls always take effect (M5).
+	const cache = new Map<string, boolean>();
 	walkNodes(ir.root, (node) => {
+		const cacheKey = `${node.id}::${peer.id}`;
+		const cached = cache.get(cacheKey);
+		if (cached !== undefined) {
+			if (!cached) rejected.push(node.id);
+			return;
+		}
 		try {
-			if (!policy.canEdit(node, peer)) rejected.push(node.id);
+			const allowed = policy.canEdit(node, peer);
+			cache.set(cacheKey, allowed);
+			if (!allowed) rejected.push(node.id);
 		} catch (error) {
+			cache.set(cacheKey, false);
 			failureError = error;
 			rejected.push(node.id);
 		}
@@ -237,12 +334,14 @@ function runValidation(
 
 function consumePendingRemoteData(
 	data: unknown,
-	pendingRemoteDataKeys: string[],
+	pendingRemoteData: Map<string, PendingRemoteEntry>,
 ): boolean {
+	sweepPendingRemoteData(pendingRemoteData, Date.now());
 	const key = stableStringify(data);
-	const index = pendingRemoteDataKeys.indexOf(key);
-	if (index === -1) return false;
-	pendingRemoteDataKeys.splice(index, 1);
+	const entry = pendingRemoteData.get(key);
+	if (!entry) return false;
+	if (entry.count <= 1) pendingRemoteData.delete(key);
+	else entry.count -= 1;
 	return true;
 }
 

@@ -54,6 +54,14 @@ export type ConnectionStatus =
 	| {
 			readonly kind: "offline";
 			readonly since: string;
+			/**
+			 * Number of local save() calls observed by the adapter since
+			 * the last "synced" status. Populated by `createYjsAdapter`
+			 * whenever the host's `connectionSource` emits an `offline`
+			 * status — the adapter substitutes its internal counter for
+			 * whatever value the host passed. Resets to 0 on the next
+			 * "synced" transition.
+			 */
 			readonly queuedEdits: number;
 	  }
 	| {
@@ -139,6 +147,14 @@ export interface MetricsSnapshot {
 	readonly syncLatencySamples: number;
 	/** Set when the adapter fell back to legacy `pageIR` after native-tree decode failed. */
 	readonly degraded: boolean;
+	/**
+	 * Number of awareness payloads that failed `validatePresenceState`
+	 * since adapter creation. A non-zero value indicates a misbehaving
+	 * peer (e.g. an `xss:` color, an oversized displayName, or an
+	 * upstream schema drift); hosts can surface this in telemetry to
+	 * catch the regression early instead of silently dropping bad peers.
+	 */
+	readonly presenceValidationFailures: number;
 }
 
 /**
@@ -273,6 +289,13 @@ export interface CreateCollabPluginOptions {
 	 * outbound save or an inbound dispatch.
 	 */
 	readonly onPolicyViolation?: (violation: PolicyViolation) => void;
+	/**
+	 * Optional callback fired when an outbound `adapter.save(...)` rejects
+	 * or throws. Without this hook, transport failures surface as
+	 * `unhandledRejection` warnings with no host visibility — wire it to
+	 * a toast, telemetry sink, or retry queue.
+	 */
+	readonly onSaveError?: (error: unknown) => void;
 }
 
 export interface CollabPluginRuntime {

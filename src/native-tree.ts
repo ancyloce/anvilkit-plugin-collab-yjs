@@ -158,15 +158,23 @@ function reconcileProps(
 	baseline: Readonly<Record<string, unknown>> | undefined,
 ): void {
 	const base = baseline ?? {};
+	// Pre-compute baseline encodings once per call so each prop is
+	// JSON.stringify'd at most twice across this reconciliation
+	// (once for the live value, once for the baseline), not 2× per
+	// prop per save like the previous tight-loop implementation (M6).
+	const baseEncoded = new Map<string, string>();
+	for (const key of Object.keys(base)) {
+		baseEncoded.set(key, JSON.stringify(base[key]));
+	}
 	for (const [key, value] of Object.entries(props)) {
 		const encoded = JSON.stringify(value);
-		const baseEncoded = key in base ? JSON.stringify(base[key]) : undefined;
+		const prevEncoded = baseEncoded.get(key);
 		// Only write keys whose value actually changed in the LOCAL
 		// authoring session; otherwise leave whatever the CRDT layer
 		// holds so concurrent disjoint edits both survive.
-		if (encoded !== baseEncoded) target.set(key, encoded);
+		if (encoded !== prevEncoded) target.set(key, encoded);
 	}
-	for (const key of Object.keys(base)) {
+	for (const key of baseEncoded.keys()) {
 		if (!(key in props)) target.delete(key);
 	}
 }
@@ -188,10 +196,7 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 	return a.every((v, i) => v === b[i]);
 }
 
-function readNode(
-	root: Y.Map<unknown>,
-	id: string,
-): PageIRNode | undefined {
+function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
 	const map = root.get(nodeKey(id));
 	if (!(map instanceof Y.Map)) return undefined;
 	const type = map.get("type");
@@ -243,10 +248,7 @@ function readNode(
 	return node as unknown as PageIRNode;
 }
 
-function walkNodes(
-	root: PageIRNode,
-	visit: (node: PageIRNode) => void,
-): void {
+function walkNodes(root: PageIRNode, visit: (node: PageIRNode) => void): void {
 	const stack: PageIRNode[] = [root];
 	while (stack.length > 0) {
 		const node = stack.pop();

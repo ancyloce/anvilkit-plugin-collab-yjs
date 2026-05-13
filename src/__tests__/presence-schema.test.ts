@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	MAX_DISPLAY_NAME_LENGTH,
+	sanitizeDisplayName,
 	validatePeerInfo,
 	validatePresenceCursor,
 	validatePresenceSelection,
@@ -33,6 +35,64 @@ describe("validatePeerInfo", () => {
 		expect(validatePeerInfo(null)).toBeNull();
 		expect(validatePeerInfo("alice")).toBeNull();
 		expect(validatePeerInfo([])).toBeNull();
+	});
+
+	// M4 hardening — color allowlist
+	it("accepts #rgb / #rrggbb / #rrggbbaa hex colors", () => {
+		expect(validatePeerInfo({ id: "a", color: "#f43" })).not.toBeNull();
+		expect(validatePeerInfo({ id: "a", color: "#f43f5e" })).not.toBeNull();
+		expect(validatePeerInfo({ id: "a", color: "#f43f5eaa" })).not.toBeNull();
+	});
+
+	it("accepts rgb() and rgba() colors", () => {
+		expect(
+			validatePeerInfo({ id: "a", color: "rgb(244, 63, 94)" }),
+		).not.toBeNull();
+		expect(
+			validatePeerInfo({ id: "a", color: "rgba(244, 63, 94, 0.5)" }),
+		).not.toBeNull();
+	});
+
+	it("accepts an allowlisted named color", () => {
+		expect(validatePeerInfo({ id: "a", color: "red" })).not.toBeNull();
+		expect(validatePeerInfo({ id: "a", color: "TRANSPARENT" })).not.toBeNull();
+	});
+
+	it("REJECTS XSS-style color strings", () => {
+		expect(
+			validatePeerInfo({ id: "a", color: "javascript:alert(1)" }),
+		).toBeNull();
+		expect(
+			validatePeerInfo({
+				id: "a",
+				color: "expression(alert(1))",
+			}),
+		).toBeNull();
+		expect(
+			validatePeerInfo({ id: "a", color: "</style><script>x</script>" }),
+		).toBeNull();
+		expect(validatePeerInfo({ id: "a", color: "unknownColorName" })).toBeNull();
+	});
+
+	it("REJECTS color strings exceeding the 32-char cap", () => {
+		const long = `#${"a".repeat(50)}`;
+		expect(validatePeerInfo({ id: "a", color: long })).toBeNull();
+	});
+
+	it("caps displayName to MAX_DISPLAY_NAME_LENGTH and strips control characters", () => {
+		const longName = "x".repeat(MAX_DISPLAY_NAME_LENGTH + 20);
+		const result = validatePeerInfo({
+			id: "a",
+			displayName: `${longName}\x00\x07\x1f`,
+		});
+		expect(result?.displayName).toBe("x".repeat(MAX_DISPLAY_NAME_LENGTH));
+	});
+
+	it("sanitizeDisplayName strips control chars and caps length", () => {
+		expect(sanitizeDisplayName("hello\x00world")).toBe("helloworld");
+		expect(sanitizeDisplayName("a".repeat(100)).length).toBe(
+			MAX_DISPLAY_NAME_LENGTH,
+		);
 	});
 });
 
