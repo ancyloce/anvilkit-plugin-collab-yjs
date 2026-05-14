@@ -25,7 +25,7 @@ import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-import { createCollabPlugin } from "../plugin.js";
+import { createCollabDataPlugin } from "../plugin.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
@@ -70,7 +70,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter: adapterA,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -111,7 +111,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -140,7 +140,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -183,7 +183,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -215,7 +215,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter: adapterA,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -263,7 +263,7 @@ describe("plugin ↔ real createYjsAdapter integration (H5)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },

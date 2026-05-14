@@ -15,7 +15,7 @@ import type { Config, PuckApi } from "@puckeditor/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDebouncedAdapter } from "../debounced-adapter.js";
-import { createCollabPlugin } from "../plugin.js";
+import { createCollabDataPlugin } from "../plugin.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
 
@@ -65,11 +65,11 @@ function fakeAdapter(): SnapshotAdapter & {
 	};
 }
 
-describe("createCollabPlugin", () => {
+describe("createCollabDataPlugin", () => {
 	it("compiles through compilePlugins and registers the expected meta", async () => {
 		const adapter = fakeAdapter();
 		const runtime = await compilePlugins(
-			[createCollabPlugin({ adapter })],
+			[createCollabDataPlugin({ adapter })],
 			createFakeStudioContext(),
 		);
 		expect(runtime.pluginMeta).toHaveLength(1);
@@ -85,7 +85,7 @@ describe("createCollabPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 
-		const harness = await registerPlugin(createCollabPlugin({ adapter }), {
+		const harness = await registerPlugin(createCollabDataPlugin({ adapter }), {
 			ctx,
 		});
 		await harness.runInit();
@@ -115,7 +115,7 @@ describe("createCollabPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 
-		const harness = await registerPlugin(createCollabPlugin({ adapter }), {
+		const harness = await registerPlugin(createCollabDataPlugin({ adapter }), {
 			ctx,
 		});
 		await harness.runInit();
@@ -136,7 +136,7 @@ describe("createCollabPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({ adapter, puckConfig: STUB_CONFIG }),
 			{ ctx },
 		);
 		await harness.runInit();
@@ -172,7 +172,7 @@ describe("createCollabPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({ adapter, puckConfig: STUB_CONFIG }),
 			{ ctx },
 		);
 		await harness.runInit();
@@ -202,7 +202,7 @@ describe("createCollabPlugin", () => {
 		});
 		const onValidationFailure = vi.fn();
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				validateRemoteIR: () => null,
 				onValidationFailure,
@@ -235,7 +235,7 @@ describe("createCollabPlugin", () => {
 		});
 		const onValidationFailure = vi.fn();
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				validateRemoteIR: () => {
 					throw new Error("not a valid IR");
@@ -264,7 +264,7 @@ describe("createCollabPlugin", () => {
 		});
 		const replacement = createFakePageIR({ rootId: "rewritten" });
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				validateRemoteIR: () => replacement,
 			}),
@@ -298,7 +298,7 @@ describe("createCollabPlugin", () => {
 				) as unknown as StudioPluginContext["getPuckApi"],
 			});
 			const harness = await registerPlugin(
-				createCollabPlugin({ adapter: debounced, puckConfig: STUB_CONFIG }),
+				createCollabDataPlugin({ adapter: debounced, puckConfig: STUB_CONFIG }),
 				{ ctx },
 			);
 			await harness.runInit();
@@ -340,7 +340,7 @@ describe("createCollabPlugin", () => {
 			load: () => createFakePageIR(),
 		};
 		const ctx = createFakeStudioContext();
-		const harness = await registerPlugin(createCollabPlugin({ adapter }), {
+		const harness = await registerPlugin(createCollabDataPlugin({ adapter }), {
 			ctx,
 		});
 		await harness.runInit();

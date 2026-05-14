@@ -13,7 +13,7 @@ import type {
 import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { createCollabPlugin } from "../plugin.js";
+import { createCollabDataPlugin } from "../plugin.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
 
@@ -46,7 +46,7 @@ function fakeAdapter() {
 	} satisfies SnapshotAdapter;
 }
 
-describe("createCollabPlugin fallback peer (H2)", () => {
+describe("createCollabDataPlugin fallback peer (H2)", () => {
 	it("emits a one-time warn log when options.localPeer is omitted", async () => {
 		const ctx = createFakeStudioContext({
 			getPuckApi: vi.fn(
@@ -54,7 +54,10 @@ describe("createCollabPlugin fallback peer (H2)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({ adapter: fakeAdapter(), puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({
+				adapter: fakeAdapter(),
+				puckConfig: STUB_CONFIG,
+			}),
 			{ ctx },
 		);
 		await harness.runInit();
@@ -75,7 +78,7 @@ describe("createCollabPlugin fallback peer (H2)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter: fakeAdapter(),
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "explicit-peer" },
@@ -105,11 +108,17 @@ describe("createCollabPlugin fallback peer (H2)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harnessA = await registerPlugin(
-			createCollabPlugin({ adapter: fakeAdapter(), puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({
+				adapter: fakeAdapter(),
+				puckConfig: STUB_CONFIG,
+			}),
 			{ ctx: ctxA },
 		);
 		const harnessB = await registerPlugin(
-			createCollabPlugin({ adapter: fakeAdapter(), puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({
+				adapter: fakeAdapter(),
+				puckConfig: STUB_CONFIG,
+			}),
 			{ ctx: ctxB },
 		);
 		await harnessA.runInit();

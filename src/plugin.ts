@@ -72,8 +72,18 @@ const META = {
  * sync only runs when `puckConfig` is supplied — keeping it optional
  * means a host can defer the wiring to the application layer if it
  * needs custom IR canonicalization.
+ *
+ * ### Naming
+ *
+ * This factory used to be exported as `createCollabPlugin`. The new
+ * `@anvilkit/plugin-collab-ui` package exposes a higher-level
+ * `createCollabPlugin` that bundles the data plugin together with the
+ * UI providers/overlays/slots. Inside this package the data-only
+ * factory is therefore renamed `createCollabDataPlugin` to
+ * disambiguate. The legacy export `createCollabPlugin` is still
+ * available as a deprecated alias for one minor release.
  */
-export function createCollabPlugin(
+export function createCollabDataPlugin(
 	options: CreateCollabPluginOptions,
 ): StudioPlugin {
 	let unsubscribe: (() => void) | undefined;
@@ -360,6 +370,49 @@ function sortKeysIfObject(value: unknown): unknown {
 		sorted[key] = value[key];
 	}
 	return sorted;
+}
+
+/**
+ * Module-scoped flag for the deprecation warning emitted by the
+ * legacy {@link createCollabPlugin} alias. The warn fires at most once
+ * per module instance (which, in practice, is once per process for
+ * production consumers) so library code calling the alias in a hot
+ * path does not flood the console.
+ *
+ * In tests, `vi.resetModules()` followed by a dynamic re-import
+ * produces a fresh instance with this flag back to `false` — see
+ * `plugin.alias-deprecation.test.ts`.
+ */
+let createCollabPluginDeprecationWarned = false;
+
+/**
+ * Deprecated alias for {@link createCollabDataPlugin}.
+ *
+ * The factory was renamed when `@anvilkit/plugin-collab-ui` introduced
+ * a higher-level `createCollabPlugin` that bundles the data plugin with
+ * UI contributions. Prefer {@link createCollabDataPlugin} for headless
+ * / power-user paths.
+ *
+ * Emits a single `console.warn` on first call per module instance.
+ * Will be removed in the next minor release of
+ * `@anvilkit/plugin-collab-yjs`.
+ *
+ * @deprecated Use {@link createCollabDataPlugin} instead, or
+ * `createCollabPlugin` from `@anvilkit/plugin-collab-ui` for the
+ * full data + UI bundle.
+ */
+export function createCollabPlugin(
+	options: CreateCollabPluginOptions,
+): StudioPlugin {
+	if (!createCollabPluginDeprecationWarned) {
+		createCollabPluginDeprecationWarned = true;
+		console.warn(
+			"[@anvilkit/plugin-collab-yjs] `createCollabPlugin` is deprecated; use `createCollabDataPlugin` instead. " +
+				"For the full data + UI bundle, import `createCollabPlugin` from `@anvilkit/plugin-collab-ui`. " +
+				"The legacy alias will be removed in the next minor release.",
+		);
+	}
+	return createCollabDataPlugin(options);
 }
 
 export type { CreateCollabPluginOptions } from "./types.js";

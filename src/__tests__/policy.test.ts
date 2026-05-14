@@ -1,7 +1,7 @@
 /**
  * @file Phase 3 (D6) — RBAC + lock policy bridge tests.
  *
- * `createCollabPlugin({ policy: { canEdit } })` is consulted on both
+ * `createCollabDataPlugin({ policy: { canEdit } })` is consulted on both
  * the inbound (remote → Puck dispatch) and outbound (Puck → adapter
  * save) paths. Rejections drop the dispatch/save and emit
  * `onPolicyViolation` with the touched node ids.
@@ -26,7 +26,7 @@ import type {
 import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { createCollabPlugin } from "../plugin.js";
+import { createCollabDataPlugin } from "../plugin.js";
 import type { PolicyViolation } from "../types.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
@@ -88,7 +88,7 @@ function withLockedHero(headline: string, locked: boolean): PageIR {
 	return { ...ir, root: { ...ir.root, children: [hero] } };
 }
 
-describe("createCollabPlugin policy bridge (D6)", () => {
+describe("createCollabDataPlugin policy bridge (D6)", () => {
 	it("inbound: drops dispatch when policy.canEdit returns false for any node", async () => {
 		const adapter = fakeAdapter();
 		const dispatch = vi.fn();
@@ -99,7 +99,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 		});
 		const onPolicyViolation = vi.fn();
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				policy: {
 					canEdit: (node) => !node.meta?.locked,
@@ -129,7 +129,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				policy: { canEdit: () => true },
 			}),
@@ -152,7 +152,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 		});
 		const onPolicyViolation = vi.fn();
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				localPeer: { id: "alice" },
@@ -191,7 +191,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				puckConfig: STUB_CONFIG,
 				policy: { canEdit: () => true },
@@ -216,7 +216,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 		});
 		const onPolicyViolation = vi.fn();
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				policy: {
 					canEdit: () => {
@@ -246,7 +246,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({
+			createCollabDataPlugin({
 				adapter,
 				policy: { canEdit: (node) => node.id !== "hero-1" },
 			}),
@@ -275,7 +275,7 @@ describe("createCollabPlugin policy bridge (D6)", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({ adapter, puckConfig: STUB_CONFIG }),
 			{ ctx },
 		);
 		await harness.runInit();
