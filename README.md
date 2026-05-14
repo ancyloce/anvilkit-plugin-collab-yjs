@@ -15,9 +15,16 @@ without forking Core or Puck. Built on
 
 ## Usage
 
+> **Naming note.** Since v0.10.0 the data-only factory previously
+> exported as `createCollabPlugin` is named `createCollabDataPlugin`.
+> The legacy name remains available as a deprecated alias (one minor
+> release) so existing code keeps compiling; it logs a one-shot
+> `console.warn` on first call. For the *full* data + UI bundle, import
+> `createCollabPlugin` from `@anvilkit/plugin-collab-ui` instead.
+
 ```ts
 import {
-  createCollabPlugin,
+  createCollabDataPlugin,
   createDebouncedAdapter,
   createYjsAdapter,
 } from "@anvilkit/plugin-collab-yjs";
@@ -43,7 +50,7 @@ const adapter = createYjsAdapter({
 const debounced = createDebouncedAdapter(adapter, { ms: 150 });
 
 registerPlugins([
-  createCollabPlugin({
+  createCollabDataPlugin({
     adapter: debounced,
     puckConfig: myPuckConfig,
     // REQUIRED for multi-peer rooms. Omitting localPeer makes the
@@ -216,8 +223,10 @@ for hosts:
 
 - `createDebouncedAdapter` now has a `destroy()` method — call it on
   unmount to cancel pending timers and forward teardown.
-- `createCollabPlugin({ onSaveError })` lets you surface outbound save
-  failures (previously they became unhandled rejections).
+- `createCollabDataPlugin({ onSaveError })` lets you surface outbound
+  save failures (previously they became unhandled rejections). Still
+  available under the deprecated alias `createCollabPlugin` for one
+  more minor release.
 - Omitting `localPeer` now mints a per-instance ephemeral id with a
   warn log instead of colliding all clients on `id: "local"`.
 - `validatePeerInfo` now enforces a color allowlist and a 64-char

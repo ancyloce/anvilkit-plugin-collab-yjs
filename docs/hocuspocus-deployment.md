@@ -132,7 +132,10 @@ npm install @hocuspocus/provider
 ```
 
 ```ts
-import { createYjsAdapter, createCollabPlugin } from "@anvilkit/plugin-collab-yjs";
+import {
+  createCollabDataPlugin,
+  createYjsAdapter,
+} from "@anvilkit/plugin-collab-yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { Doc as YDoc } from "yjs";
 
@@ -181,7 +184,7 @@ const adapter = createYjsAdapter({
 });
 
 registerPlugins([
-  createCollabPlugin({
+  createCollabDataPlugin({
     adapter,
     localPeer: { id: currentUser.id, displayName: currentUser.name },
     onSaveError: (error) => toast(`Save failed: ${error}`),
