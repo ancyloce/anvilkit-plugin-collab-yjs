@@ -1,5 +1,77 @@
 # @anvilkit/plugin-collab-yjs
 
+## 0.10.0-rc.0 — 2026-05-14
+
+Long-term plan execution (L1-L6 from
+`docs/plan/plugin-collab-yjs-development-plan-2026-05-13.md`). Closes
+the GA story on encoding default, snapshot diff API, presence
+hardening, cross-tab persistence, and Hocuspocus production guidance.
+193 unit tests + 5 integration tests passing.
+
+### Breaking-ish
+
+- **L1 — Native-tree is now the default encoding.** New rooms get the
+  flat-addressed `Y.Map` mirror automatically; concurrent edits to
+  disjoint nodes merge cleanly via Y.js per-key CRDT semantics
+  instead of LWW-clobbering each other. Hosts running legacy rooms
+  can opt back into the JSON-blob encoding by passing
+  `useNativeTree: false`. Adapters constructed on a Y.Doc that only
+  has the legacy `pageIR` JSON-blob payload migrate the tree at
+  construction time — one-shot, transactional, idempotent — so no
+  manual migration step is required.
+
+### Added
+
+- **L2 — Snapshot diff API.** `SnapshotMeta.delta?: IRDiff` (additive
+  optional field) carries a structural per-node diff against the
+  previous snapshot when the adapter is constructed with
+  `computeDelta: true`. Useful for audit logs, change-summary UIs,
+  and undo-stack replay. The `diffSnapshots(prev, next)` helper is
+  re-exported for hosts that want to diff arbitrary IR pairs.
+- **L3 — Awareness rate-limit and bounded churn.** Outbound
+  `presence.update` calls now flow through a token-bucket limiter
+  (default 30/sec, configurable via
+  `awarenessRateLimit.maxPerSecond`). Local cursor-on-every-mousemove
+  loops no longer flood the awareness channel. The
+  `MetricsSnapshot.awarenessChurn` sliding window widened from 60s
+  to 5 minutes so short idle gaps don't zero the signal.
+- **L5 — Cross-tab persistence (IndexedDB + BroadcastChannel).**
+  Opt-in via the new `persistence` option on `createYjsAdapter`. Two
+  toggles:
+  - `persistence.indexedDb: true` durably queues outbound Y.js
+    updates so a brief disconnect doesn't lose unflushed edits.
+    Updates replay on reconnect via the existing `synced` transition.
+    On adapter construction, leftover updates from a prior session
+    hydrate into the Y.Doc before the first `subscribe()` emission.
+  - `persistence.broadcastChannel: true` relays Y.Doc updates to
+    other tabs on the same origin so two tabs of the same app see
+    each other's edits without round-tripping through the transport.
+    A per-adapter `instanceId` echo guard drops self-loops.
+  Both backends feature-detect at construction time and degrade
+  silently to no-ops when the underlying API is unavailable (SSR,
+  older Node versions, certain test environments). Quota errors,
+  schema-version mismatches, and `BroadcastChannel` construction
+  failures route through the optional `persistence.onFault`
+  callback. When persistence is enabled,
+  `getStatus().queuedEdits` reads directly from the IDB queue.
+- **L6 — Hocuspocus deployment recipe.** New
+  `docs/hocuspocus-deployment.md` documents production-ready
+  deployment with auth (`onAuthenticate` hook), durable Postgres
+  persistence (`@hocuspocus/extension-database`), horizontal
+  scale-out (`@hocuspocus/extension-redis`), and the
+  `connectionSource` wiring between `HocuspocusProvider` and the
+  adapter's `ConnectionStatus` surface. README now links to it from
+  the "Reference transport" section.
+
+### Deferred (future work captured in code)
+
+- Update compaction (`Y.mergeUpdatesV2` once the IDB queue exceeds
+  N entries) — currently the queue accumulates until reconnect
+  drains it.
+- Snapshot-level persistence (full state dump for fast tab bootstrap
+  without replaying every update).
+- Encryption at rest for the IDB queue.
+
 ## 0.9.0-rc.1 — 2026-05-13
 
 GA-stabilization round addressing 24 issues raised in the 2026-05-13
