@@ -86,6 +86,44 @@ Each saved snapshot also gets its own `snapshotMeta:<id>` and
 See [`docs/architecture/realtime-collab.md`](../../../docs/architecture/realtime-collab.md)
 for the full design and threat model.
 
+## Presence security
+
+Awareness payloads ride an untrusted transport. The adapter validates
+every inbound `PresenceState` through `validatePresenceState`, which
+delegates to `validatePeerInfo` for the peer record. Two specific
+hardenings are worth knowing about when you render presence data into
+the DOM:
+
+- **`color` allowlist.** Anything that doesn't match `#rgb` / `#rrggbb`
+  / `#rrggbbaa`, `rgb(...)`, `rgba(...)`, or a small named-color set is
+  rejected — including `javascript:`, `expression(...)`, `<script>...`,
+  and arbitrary strings. Rejection drops the entire peer record (not
+  just the color field) so a malicious peer cannot smuggle a payload
+  with only the safe parts.
+- **`displayName` sanitization.** `sanitizeDisplayName` strips ASCII
+  control characters (`U+0000`–`U+001F` and `U+007F`) and truncates to
+  `MAX_DISPLAY_NAME_LENGTH` (64 chars). It does **not** HTML-escape —
+  if your UI injects the name via `innerHTML` or templates that don't
+  auto-escape, escape at the rendering boundary.
+
+```ts
+import {
+  MAX_DISPLAY_NAME_LENGTH,
+  sanitizeDisplayName,
+} from "@anvilkit/plugin-collab-yjs";
+
+// Belt-and-suspenders: sanitize at construction time too.
+const localPeer = {
+  id: "alice",
+  displayName: sanitizeDisplayName(userInput),
+  color: "#f43f5e",
+};
+```
+
+`MetricsSnapshot.presenceValidationFailures` counts how many inbound
+peer records were rejected, so hosts can alert on a noisy or hostile
+room without inspecting individual payloads.
+
 ## Reference transport
 
 A minimal `y-websocket` relay lives under `examples/` in this
