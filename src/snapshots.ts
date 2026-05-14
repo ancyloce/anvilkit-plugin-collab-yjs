@@ -1,5 +1,9 @@
 import type { PageIR } from "@anvilkit/core/types";
-import type { PeerInfo, SnapshotMeta } from "@anvilkit/plugin-version-history";
+import {
+	diffIR,
+	type PeerInfo,
+	type SnapshotMeta,
+} from "@anvilkit/plugin-version-history";
 import * as Y from "yjs";
 
 import type { ConflictModule } from "./conflicts.js";
@@ -29,6 +33,7 @@ export interface SnapshotsModuleOptions {
 	readonly metrics: MetricsState;
 	readonly conflicts: ConflictModule;
 	readonly getCurrentStatus: () => ConnectionStatus;
+	readonly computeDelta: boolean;
 }
 
 export interface SnapshotsModule {
@@ -71,6 +76,7 @@ export function createSnapshots(
 		metrics,
 		conflicts,
 		getCurrentStatus,
+		computeDelta,
 	} = options;
 	const subscribeListeners = new Set<(ir: PageIR, peer?: PeerInfo) => void>();
 	let lastLocalSavedAt: number | undefined;
@@ -109,11 +115,25 @@ export function createSnapshots(
 	return {
 		save(ir, meta): string {
 			const encoded = encodeIR(ir);
+			// L2 — compute the structural diff against the previously
+			// saved IR (or against the empty document for the first
+			// save). Captured BEFORE conflicts.noteLocalSave() advances
+			// `lastLocalIR` to the new IR.
+			let delta: SnapshotMeta["delta"];
+			if (computeDelta || meta.delta !== undefined) {
+				const previous = conflicts.getLastLocalIR();
+				delta =
+					meta.delta ??
+					(previous === undefined
+						? diffIR(EMPTY_IR, ir)
+						: diffIR(previous, ir));
+			}
 			const snapshotMeta: SnapshotMeta = {
 				id: metrics.createSnapshotId(),
 				label: meta.label,
 				savedAt: new Date().toISOString(),
 				pageIRHash: meta.pageIRHash ?? hashIR(encoded),
+				...(delta !== undefined ? { delta } : {}),
 			};
 			doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
@@ -268,11 +288,20 @@ function isSnapshotMeta(value: unknown): value is SnapshotMeta {
 		label?: unknown;
 		pageIRHash?: unknown;
 		savedAt?: unknown;
+		delta?: unknown;
 	};
 	return (
 		typeof candidate.id === "string" &&
 		(candidate.label === undefined || typeof candidate.label === "string") &&
 		typeof candidate.pageIRHash === "string" &&
-		typeof candidate.savedAt === "string"
+		typeof candidate.savedAt === "string" &&
+		(candidate.delta === undefined || Array.isArray(candidate.delta))
 	);
 }
+
+const EMPTY_IR: PageIR = {
+	version: "1",
+	root: { id: "__empty__", type: "__empty__", props: {} },
+	assets: [],
+	metadata: {},
+};

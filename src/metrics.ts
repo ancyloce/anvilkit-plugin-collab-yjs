@@ -1,7 +1,7 @@
 import type { MetricsSnapshot } from "./types.js";
 
 const LATENCY_WINDOW_SIZE = 200;
-const CHURN_WINDOW_MS = 60_000;
+const CHURN_WINDOW_MS = 5 * 60_000;
 
 export interface MetricsState {
 	recordObservationLatency(savedAt: number): void;
@@ -21,9 +21,10 @@ export interface MetricsState {
  *   counters).
  * - degraded (boolean flag — native-tree decode fallback indicator).
  * - latencyWindow (200-sample FIFO of observed remote-update latencies).
- * - awarenessChurn — 60s sliding window of awareness change events
- *   (L1: replaces the previous monotonically-growing counter that
- *   became meaningless on long sessions).
+ * - awarenessChurn — 5-minute sliding window of awareness change events
+ *   (L1 review: replaced the previous monotonically-growing counter that
+ *   became meaningless on long sessions; L3 widened from 60s to 5min so
+ *   short idle gaps don't zero the signal).
  * - snapshot counter — local to this closure so concurrent adapters
  *   on the same Y.Doc no longer share a global counter (L2).
  *

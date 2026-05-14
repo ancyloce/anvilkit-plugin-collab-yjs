@@ -40,6 +40,89 @@ export interface CreateYjsAdapterOptions {
 	 * demos and tests behave sensibly without provider plumbing.
 	 */
 	readonly connectionSource?: ConnectionSource;
+	/**
+	 * When `true`, every `save()` computes a structural `IRDiff` against
+	 * the previous locally saved IR (or against the empty document for
+	 * the first save) and attaches it to the resulting `SnapshotMeta`
+	 * as `delta`. Default: `false` (preserves write performance and
+	 * snapshot index size). See L2 in the development plan.
+	 */
+	readonly computeDelta?: boolean;
+	/**
+	 * Token-bucket rate-limit on outbound `presence.update` calls.
+	 * Local cursor/selection updates beyond the bucket are dropped
+	 * silently (no churn growth) until tokens replenish. Inbound
+	 * awareness changes from other peers are NOT throttled.
+	 *
+	 * Default: 30 updates per second (`maxPerSecond: 30`).
+	 * Set `maxPerSecond` to `Infinity` to disable the limiter.
+	 */
+	readonly awarenessRateLimit?: AwarenessRateLimitOptions;
+	/**
+	 * Opt-in cross-tab persistence layer (L5). When omitted, no
+	 * IndexedDB or BroadcastChannel calls are made and the adapter
+	 * behaves exactly as it did pre-L5. See {@link PersistenceOptions}
+	 * for the individual toggles.
+	 */
+	readonly persistence?: PersistenceOptions;
+}
+
+export interface AwarenessRateLimitOptions {
+	/**
+	 * Maximum sustained outbound `presence.update` calls per second.
+	 * The bucket size equals this value so a brief idle period lets a
+	 * full-second burst through. Default: 30.
+	 */
+	readonly maxPerSecond?: number;
+}
+
+/**
+ * Opt-in cross-tab persistence (L5). The default `createYjsAdapter`
+ * call uses no persistence — outbound Y.js updates flow through the
+ * host transport (websocket, hocuspocus, etc.) only. Enabling
+ * `indexedDb` adds a durable queue so edits made while offline replay
+ * on reconnect. Enabling `broadcastChannel` adds same-origin cross-tab
+ * sync so two tabs of the same app see each other's edits without
+ * round-tripping through the transport.
+ *
+ * Each backend feature-detects at construction time and degrades
+ * silently to a no-op if its API is unavailable (SSR, older browsers,
+ * certain test runners).
+ */
+export interface PersistenceOptions {
+	/**
+	 * Enable the IndexedDB-backed offline queue. Default: `false`.
+	 */
+	readonly indexedDb?: boolean;
+	/**
+	 * Enable same-origin cross-tab sync via `BroadcastChannel`.
+	 * Default: `false`.
+	 */
+	readonly broadcastChannel?: boolean;
+	/**
+	 * IndexedDB database name. The adapter combines this with the
+	 * `mapName` so multiple rooms in the same origin do not collide.
+	 * Default: `"anvilkit-collab-yjs"`.
+	 */
+	readonly dbName?: string;
+	/**
+	 * BroadcastChannel name. Defaults to `"<dbName>:<mapName>"` so
+	 * multiple rooms in the same origin do not collide.
+	 */
+	readonly channelName?: string;
+	/**
+	 * IndexedDB schema version. Bumped only when the queue's stored
+	 * shape changes; rolling forward never downgrades the on-disk
+	 * data. Default: `1`.
+	 */
+	readonly schemaVersion?: number;
+	/**
+	 * Notified once when either backend fails to open / falls back to
+	 * a no-op. Useful for telemetry — the adapter never throws out of
+	 * persistence into the Y.Doc observer chain, so this is the only
+	 * way to learn about quota or schema faults.
+	 */
+	readonly onFault?: (reason: string) => void;
 }
 
 /**

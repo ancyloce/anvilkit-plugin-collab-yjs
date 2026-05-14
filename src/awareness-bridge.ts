@@ -7,11 +7,16 @@ import type { Awareness } from "y-protocols/awareness";
 
 import type { MetricsState } from "./metrics.js";
 import { validatePresenceState } from "./presence-schema.js";
+import type { AwarenessRateLimitOptions } from "./types.js";
 
 export interface AwarenessBridge {
 	readonly presence: SnapshotAdapterPresence;
+	/** Test/telemetry hook — count of `presence.update` calls dropped by the rate-limiter since adapter creation. */
+	readonly droppedUpdateCount: () => number;
 	destroy(): void;
 }
+
+const DEFAULT_PRESENCE_RATE_PER_SECOND = 30;
 
 /**
  * Bridge between the host's `Awareness` instance and the
@@ -23,6 +28,9 @@ export interface AwarenessBridge {
  * - filter peer states through `validatePresenceState` so a malformed
  *   payload from one peer never poisons the local view; rejected
  *   payloads bump `presenceValidationFailures` (L7).
+ * - apply a token-bucket rate-limit to outbound `presence.update`
+ *   so a misbehaving host (cursor-on-every-mousemove) can't flood
+ *   awareness traffic (L3 — default 30/sec, configurable).
  *
  * `destroy()` removes every awareness listener this module registered.
  * The orchestrator (`yjs-adapter.ts`) calls it on the public
@@ -32,6 +40,7 @@ export interface AwarenessBridge {
 export function createAwarenessBridge(
 	awareness: Awareness,
 	metrics: MetricsState,
+	rateLimit?: AwarenessRateLimitOptions,
 ): AwarenessBridge {
 	const churnHandler = () => {
 		metrics.incChurn();
@@ -40,8 +49,39 @@ export function createAwarenessBridge(
 
 	const peerChangeHandlers = new Set<() => void>();
 
+	const maxPerSecond =
+		rateLimit?.maxPerSecond ?? DEFAULT_PRESENCE_RATE_PER_SECOND;
+	const bucketCapacity = Number.isFinite(maxPerSecond)
+		? Math.max(1, maxPerSecond)
+		: Infinity;
+	let tokens = bucketCapacity;
+	let lastRefillTs = Date.now();
+	let droppedUpdates = 0;
+
+	function takeToken(): boolean {
+		if (!Number.isFinite(bucketCapacity)) return true;
+		const now = Date.now();
+		const elapsed = now - lastRefillTs;
+		if (elapsed > 0) {
+			tokens = Math.min(
+				bucketCapacity,
+				tokens + (elapsed * maxPerSecond) / 1000,
+			);
+			lastRefillTs = now;
+		}
+		if (tokens >= 1) {
+			tokens -= 1;
+			return true;
+		}
+		return false;
+	}
+
 	const presence: SnapshotAdapterPresence = {
 		update(state: PresenceState): void {
+			if (!takeToken()) {
+				droppedUpdates += 1;
+				return;
+			}
 			// Intentionally outside doc.transact — awareness is a
 			// side-channel for ephemeral peer state (cursor, selection,
 			// display name) and must NOT be atomic with save() writes.
@@ -75,6 +115,7 @@ export function createAwarenessBridge(
 
 	return {
 		presence,
+		droppedUpdateCount: () => droppedUpdates,
 		destroy(): void {
 			awareness.off("change", churnHandler);
 			for (const handler of peerChangeHandlers) {

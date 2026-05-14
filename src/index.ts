@@ -2,6 +2,7 @@ export {
 	DebouncedAdapterDestroyedError,
 	createDebouncedAdapter,
 } from "./debounced-adapter.js";
+export { diffSnapshots } from "./diff.js";
 export { decodeIR, encodeIR, hashIR } from "./encode.js";
 export { createCollabPlugin } from "./plugin.js";
 export { usePuckSelection } from "./selection-bridge.js";
@@ -18,6 +19,7 @@ export type {
 	SnapshotAdapterWithMetrics,
 } from "./debounced-adapter.js";
 export type {
+	AwarenessRateLimitOptions,
 	CollabPluginRuntime,
 	CollabPolicy,
 	ConflictEvent,
@@ -26,6 +28,7 @@ export type {
 	CreateCollabPluginOptions,
 	CreateYjsAdapterOptions,
 	MetricsSnapshot,
+	PersistenceOptions,
 	PolicyViolation,
 	ValidateRemoteIR,
 	ValidationFailure,
