@@ -251,15 +251,17 @@ function dispatchRemoteIR(
 	// `getPuckApi().appState` keeps this path off Puck's API when the
 	// plugin context is configured without a live `<Puck>` mount
 	// (tests, headless validation).
-	let currentKey: string | undefined;
+	let currentData: PuckData | undefined;
 	try {
-		currentKey = stableStringify(ctx.getData());
+		currentData = ctx.getData() as PuckData;
 	} catch {
 		// `getData` shouldn't throw, but if a host implementation does,
 		// fall through to the dispatch path rather than swallow the
 		// remote update silently.
-		currentKey = undefined;
+		currentData = undefined;
 	}
+	const currentKey =
+		currentData === undefined ? undefined : stableStringify(currentData);
 	if (currentKey !== undefined && currentKey === key) return;
 	const now = Date.now();
 	sweepPendingRemoteData(pendingRemoteData, now);
@@ -271,7 +273,24 @@ function dispatchRemoteIR(
 		pendingRemoteData.set(key, { count: 1, addedAt: now });
 	}
 	try {
-		ctx.getPuckApi().dispatch({ type: "setData", data });
+		// Prefer atomic `replace` per changed item over the heavy
+		// `setData` action when the structural shape (`content`
+		// length, item ids, zone keyset) is unchanged. `replace` only
+		// re-renders the replaced item; sibling components keep their
+		// React identity, which preserves a focused peer's textarea
+		// caret position when a remote peer edits a different node —
+		// or a different prop of the same node, since the focused
+		// field's `useLocalValue` short-circuits on `isFocused`.
+		// Falls through to `setData` for structural changes
+		// (insert/remove/reorder, zone topology shifts) where atomic
+		// replacement isn't enough.
+		const planResult = planReplaceActions(currentData, data);
+		const api = ctx.getPuckApi();
+		if (planResult.actions !== null) {
+			for (const action of planResult.actions) api.dispatch(action);
+		} else {
+			api.dispatch({ type: "setData", data });
+		}
 	} catch (error) {
 		// Roll back the speculative count bump since the echo never made it
 		// into Puck's pipeline and no matching onDataChange will arrive.
@@ -284,6 +303,137 @@ function dispatchRemoteIR(
 			error,
 		});
 	}
+}
+
+/**
+ * Re-export of Puck's data shape for the diff planner. We intentionally
+ * keep the structural typing here loose — we only care about the
+ * `content` array and the optional `zones` map.
+ */
+type PuckData = {
+	readonly content?: ReadonlyArray<PuckContentItem>;
+	readonly zones?: Readonly<Record<string, ReadonlyArray<PuckContentItem>>>;
+	readonly root?: unknown;
+};
+
+type PuckContentItem = {
+	readonly type: string;
+	readonly props: Readonly<Record<string, unknown>> & { readonly id: string };
+};
+
+type ReplaceAction = {
+	readonly type: "replace";
+	readonly destinationZone: string;
+	readonly destinationIndex: number;
+	readonly data: PuckContentItem;
+};
+
+const ROOT_DROPPABLE_ID = "root:default-zone";
+
+/**
+ * Plan a sequence of Puck `replace` actions that take `before` to
+ * `after`, or return `null` if the structural shape changed enough
+ * that `setData` is the safer fallback.
+ *
+ * The planner only emits replacements for items whose `props.id`
+ * exists in both versions at the same `(zone, index)` slot. Inserts,
+ * deletes, and reorders all fall through to `setData` so the host's
+ * zone-index store stays consistent.
+ */
+interface PlanResult {
+	readonly actions: readonly ReplaceAction[] | null;
+	readonly fallbackReason?: string;
+}
+
+function planReplaceActions(
+	before: PuckData | undefined,
+	after: PuckData,
+): PlanResult {
+	if (!before) return { actions: null, fallbackReason: "no-current-data" };
+	// Compare just the root component's props rather than the raw
+	// root object. Puck normalises `root: { props: {} }` and
+	// `root: {}` differently, but for collab-dispatch purposes they
+	// represent the same authoritative state — only the props
+	// actually drive renderers.
+	const beforeRootProps = extractRootProps(before.root);
+	const afterRootProps = extractRootProps(after.root);
+	if (!isShallowJsonEqual(beforeRootProps, afterRootProps)) {
+		return { actions: null, fallbackReason: "root-changed" };
+	}
+	const beforeZoneKeys = new Set(Object.keys(before.zones ?? {}));
+	const afterZoneKeys = new Set(Object.keys(after.zones ?? {}));
+	if (
+		beforeZoneKeys.size !== afterZoneKeys.size ||
+		[...beforeZoneKeys].some((k) => !afterZoneKeys.has(k))
+	) {
+		return { actions: null, fallbackReason: "zone-keyset-changed" };
+	}
+	const actions: ReplaceAction[] = [];
+	const contentDiff = diffZoneContent(
+		ROOT_DROPPABLE_ID,
+		before.content,
+		after.content,
+	);
+	if (contentDiff === null) {
+		return { actions: null, fallbackReason: "content-structure-changed" };
+	}
+	actions.push(...contentDiff);
+	for (const zoneKey of beforeZoneKeys) {
+		const zoneDiff = diffZoneContent(
+			zoneKey,
+			before.zones?.[zoneKey],
+			after.zones?.[zoneKey],
+		);
+		if (zoneDiff === null) {
+			return {
+				actions: null,
+				fallbackReason: `zone-${zoneKey}-structure-changed`,
+			};
+		}
+		actions.push(...zoneDiff);
+	}
+	return { actions };
+}
+
+function diffZoneContent(
+	zoneKey: string,
+	before: ReadonlyArray<PuckContentItem> | undefined,
+	after: ReadonlyArray<PuckContentItem> | undefined,
+): readonly ReplaceAction[] | null {
+	const a = before ?? [];
+	const b = after ?? [];
+	if (a.length !== b.length) return null;
+	const actions: ReplaceAction[] = [];
+	for (let i = 0; i < a.length; i += 1) {
+		const beforeItem = a[i];
+		const afterItem = b[i];
+		if (!beforeItem || !afterItem) return null;
+		if (beforeItem.props.id !== afterItem.props.id) return null;
+		if (beforeItem.type !== afterItem.type) return null;
+		if (isShallowJsonEqual(beforeItem, afterItem)) continue;
+		actions.push({
+			type: "replace",
+			destinationZone: zoneKey,
+			destinationIndex: i,
+			data: afterItem,
+		});
+	}
+	return actions;
+}
+
+function isShallowJsonEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	return stableStringify(a) === stableStringify(b);
+}
+
+function extractRootProps(root: unknown): Record<string, unknown> {
+	if (root === null || typeof root !== "object") return {};
+	const obj = root as Record<string, unknown>;
+	const props = obj.props;
+	if (props && typeof props === "object" && !Array.isArray(props)) {
+		return props as Record<string, unknown>;
+	}
+	return {};
 }
 
 function enforcePolicy(
