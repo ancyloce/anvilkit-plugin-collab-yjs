@@ -6,6 +6,8 @@ export { decodeIR, encodeIR, hashIR } from "./encode.js";
 export { createCollabPlugin } from "./plugin.js";
 export { usePuckSelection } from "./selection-bridge.js";
 export {
+	MAX_DISPLAY_NAME_LENGTH,
+	sanitizeDisplayName,
 	validatePeerInfo,
 	validatePresenceCursor,
 	validatePresenceSelection,

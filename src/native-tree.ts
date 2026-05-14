@@ -1,6 +1,14 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import * as Y from "yjs";
 
+import {
+	NATIVE_ASSETS_KEY,
+	NATIVE_METADATA_KEY,
+	NATIVE_ROOT_ID_KEY,
+	NATIVE_VERSION_KEY,
+	nativeNodeKey,
+} from "./keys.js";
+
 /**
  * Flat-addressed native Y tree for `PageIR` — Phase 1 (D1) opt-in.
  *
@@ -31,11 +39,16 @@ import * as Y from "yjs";
  * the same node still rely on Y.Map prop-level LWW.
  */
 
-export const NATIVE_VERSION_KEY = "version";
-export const NATIVE_ROOT_ID_KEY = "rootId";
-export const NATIVE_ASSETS_KEY = "assets";
-export const NATIVE_METADATA_KEY = "metadata";
-export const NATIVE_NODE_PREFIX = "node:";
+// Re-export the native-tree keys for backward compatibility with
+// callers that imported them from this module (e.g. test files).
+// The canonical home is `./keys.ts` (M8).
+export {
+	NATIVE_ASSETS_KEY,
+	NATIVE_METADATA_KEY,
+	NATIVE_NODE_PREFIX,
+	NATIVE_ROOT_ID_KEY,
+	NATIVE_VERSION_KEY,
+} from "./keys.js";
 
 interface NodeYMap extends Y.Map<unknown> {}
 
@@ -64,7 +77,7 @@ export function applyIRToNativeTree(
 	collectIds(ir.root, desiredIds);
 
 	walkNodes(ir.root, (node) => {
-		const key = nodeKey(node.id);
+		const key = nativeNodeKey(node.id);
 		let nodeMap = root.get(key) as NodeYMap | undefined;
 		if (!(nodeMap instanceof Y.Map)) {
 			nodeMap = new Y.Map<unknown>();
@@ -75,7 +88,7 @@ export function applyIRToNativeTree(
 
 	const baselineIds = new Set(baselineNodes.keys());
 	for (const id of baselineIds) {
-		if (!desiredIds.has(id)) root.delete(nodeKey(id));
+		if (!desiredIds.has(id)) root.delete(nativeNodeKey(id));
 	}
 }
 
@@ -197,7 +210,7 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 }
 
 function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
-	const map = root.get(nodeKey(id));
+	const map = root.get(nativeNodeKey(id));
 	if (!(map instanceof Y.Map)) return undefined;
 	const type = map.get("type");
 	if (typeof type !== "string") return undefined;
@@ -261,10 +274,6 @@ function walkNodes(root: PageIRNode, visit: (node: PageIRNode) => void): void {
 function collectIds(node: PageIRNode, out: Set<string>): void {
 	out.add(node.id);
 	if (node.children) for (const child of node.children) collectIds(child, out);
-}
-
-function nodeKey(id: string): string {
-	return `${NATIVE_NODE_PREFIX}${id}`;
 }
 
 function parseJSONOr<T>(raw: unknown, fallback: T): T {

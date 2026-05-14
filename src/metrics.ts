@@ -3,17 +3,6 @@ import type { MetricsSnapshot } from "./types.js";
 const LATENCY_WINDOW_SIZE = 200;
 const CHURN_WINDOW_MS = 60_000;
 
-/**
- * Module-scoped snapshot counter. Intentionally NOT per-adapter so
- * sibling adapters in the same process produce strictly-ordered ids —
- * critical for the partition-harness / round-trip fuzzer which spawn
- * two adapters in one process and rely on `list()` returning the most
- * recent save as the lexically largest id. Each adapter still gets
- * unique ids because the counter increments per save call regardless
- * of which adapter made it.
- */
-let sharedSnapshotCounter = 0;
-
 export interface MetricsState {
 	recordObservationLatency(savedAt: number): void;
 	incSaveCount(): void;
@@ -47,6 +36,7 @@ export function createMetricsState(): MetricsState {
 	let dispatchFailures = 0;
 	let presenceValidationFailures = 0;
 	let degraded = false;
+	let snapshotCounter = 0;
 	const latencyWindow: number[] = [];
 	const churnTimestamps: number[] = [];
 
@@ -82,8 +72,8 @@ export function createMetricsState(): MetricsState {
 			degraded = value;
 		},
 		createSnapshotId(): string {
-			const counter = sharedSnapshotCounter;
-			sharedSnapshotCounter += 1;
+			const counter = snapshotCounter;
+			snapshotCounter += 1;
 			return `snap-${Date.now().toString(36)}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
 		},
 		snapshot(): MetricsSnapshot {
