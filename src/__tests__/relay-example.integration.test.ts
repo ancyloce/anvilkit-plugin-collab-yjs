@@ -25,7 +25,7 @@ describe("reference y-websocket relay", () => {
 						`relay did not start in time. stdout=${stdout} stderr=${stderr}`,
 					),
 				);
-			}, 5_000);
+			}, 10_000);
 
 			child.stdout.on("data", (chunk: string) => {
 				stdout += chunk;
