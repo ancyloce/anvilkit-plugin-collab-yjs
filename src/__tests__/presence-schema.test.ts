@@ -53,6 +53,16 @@ describe("validatePeerInfo", () => {
 		).not.toBeNull();
 	});
 
+	it("accepts hsl() and hsla() colors", () => {
+		expect(validatePeerInfo({ id: "a", color: "hsl(214, 70%, 55%)" })).toEqual({
+			id: "a",
+			color: "hsl(214, 70%, 55%)",
+		});
+		expect(
+			validatePeerInfo({ id: "a", color: "hsla(214, 70%, 55%, 0.5)" }),
+		).toEqual({ id: "a", color: "hsla(214, 70%, 55%, 0.5)" });
+	});
+
 	it("accepts an allowlisted named color", () => {
 		expect(validatePeerInfo({ id: "a", color: "red" })).not.toBeNull();
 		expect(validatePeerInfo({ id: "a", color: "TRANSPARENT" })).not.toBeNull();

@@ -20,7 +20,8 @@ import type {
  *   match are filtered out — the result is the validated payload with a
  *   sanitized name, not a rejection of the whole record.
  * - `color` is validated against an allowlist regex covering `#rgb`,
- *   `#rrggbb`, `#rrggbbaa`, `rgb(...)`, `rgba(...)`, and the
+ *   `#rrggbb`, `#rrggbbaa`, `rgb(...)`, `rgba(...)`, `hsl(...)`,
+ *   `hsla(...)`, and the
  *   `NAMED_COLOR_SET`. Anything else (notably `javascript:`,
  *   `expression(...)`, `<script>`, or arbitrary strings) is treated as
  *   schema failure and rejects the peer record entirely. Hosts that
@@ -31,7 +32,7 @@ import type {
 export const MAX_DISPLAY_NAME_LENGTH = 64;
 
 const COLOR_REGEX =
-	/^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{4}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\))$/;
+	/^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{4}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\)|hsla\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*,\s*(0|1|0?\.\d+)\s*\))$/;
 
 const NAMED_COLOR_SET = new Set([
 	"transparent",
