@@ -239,6 +239,28 @@ function dispatchRemoteIR(
 	}
 	const data = irToPuckData(validated);
 	const key = stableStringify(data);
+	// Skip the dispatch when the resulting Puck data is structurally
+	// identical to what Puck already holds. This eliminates two
+	// classes of spurious re-render that would otherwise reset
+	// focused controlled inputs (cursor jumps in <textarea>):
+	//   - server echo of the local peer's own writes coming back
+	//     through the relay
+	//   - CRDT merges where the remote update did not change anything
+	//     the host actually renders (e.g. internal metadata churn)
+	// Reading current data via `ctx.getData()` instead of
+	// `getPuckApi().appState` keeps this path off Puck's API when the
+	// plugin context is configured without a live `<Puck>` mount
+	// (tests, headless validation).
+	let currentKey: string | undefined;
+	try {
+		currentKey = stableStringify(ctx.getData());
+	} catch {
+		// `getData` shouldn't throw, but if a host implementation does,
+		// fall through to the dispatch path rather than swallow the
+		// remote update silently.
+		currentKey = undefined;
+	}
+	if (currentKey !== undefined && currentKey === key) return;
 	const now = Date.now();
 	sweepPendingRemoteData(pendingRemoteData, now);
 	const existing = pendingRemoteData.get(key);

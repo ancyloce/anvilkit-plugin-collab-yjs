@@ -100,6 +100,52 @@ describe("createCollabPlugin echo detection (H1)", () => {
 		expect(adapter.savedIRs).toHaveLength(1);
 	});
 
+	it("skips the setData dispatch when the remote IR maps to data structurally equal to Puck's current data", async () => {
+		// Regression for the cursor-jump symptom of the "X's edit
+		// overlapped your unsaved change in hero-primary" report:
+		// every remote tick used to fire `dispatch({ type: 'setData' })`
+		// even when the merged remote IR produced data identical to
+		// what Puck already held. That setData re-runs walkAppState,
+		// rebuilds the zone/node indexes, and re-renders every controlled
+		// input — which collapsed the textarea cursor to the end when
+		// the local user was typing in the middle of a Hero headline.
+		const adapter = fakeAdapter();
+		const dispatch = vi.fn();
+		const sharedIR = createFakePageIR({ rootId: "shared-root" });
+		const sharedData = irToPuckData(sharedIR);
+		// `ctx.getData()` returns the SAME data Puck is currently
+		// showing. With the fix, the plugin compares incoming remote
+		// data against this and skips the redundant dispatch.
+		const ctx = createFakeStudioContext({
+			getData: () => sharedData,
+			getPuckApi: vi.fn(
+				() => ({ dispatch }) as unknown as PuckApi,
+			) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const harness = await registerPlugin(
+			createCollabPlugin({
+				adapter,
+				puckConfig: STUB_CONFIG,
+				localPeer: { id: "local-test" },
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+		// Discount the hydration-time dispatch the plugin may emit on
+		// `onInit` from `adapter.list()/load()`. The fake adapter starts
+		// with one snapshot already loaded; that initial hydration is
+		// not what this test is asserting against.
+		dispatch.mockClear();
+
+		// Drive three identical remote updates. Each carries data that
+		// matches Puck's current data exactly — no spurious setData
+		// should be issued.
+		adapter.pushUpdate(sharedIR);
+		adapter.pushUpdate(sharedIR);
+		adapter.pushUpdate(sharedIR);
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
 	it("decrements echo count per consume so a refcount stays bounded under bursts", async () => {
 		const adapter = fakeAdapter();
 		const dispatch = vi.fn();

@@ -124,4 +124,84 @@ describe("createYjsAdapter onConflict", () => {
 		expect(typeof unsub).toBe("function");
 		unsub();
 	});
+
+	it("does NOT fire when peers edit disjoint props of the same node within the conflict window", () => {
+		// Regression: previously, two peers typing in DIFFERENT fields
+		// of the same Hero (e.g. Alice in `headline`, Bob in
+		// `description`) raised "Bob's edit overlapped your unsaved
+		// change in hero-1" on Alice's screen — even though the native-
+		// tree CRDT merged the disjoint edits cleanly and nothing was
+		// lost. The fix tracks a per-window `baselineIR` and only flags
+		// the node when BOTH peers diverged from baseline on the SAME
+		// prop.
+		const docA = new YDoc();
+		const docB = new YDoc();
+		pair(docA, docB);
+
+		const adapterA = createYjsAdapter({
+			doc: docA,
+			peer: { id: "alice" },
+			staleAfterMs: 5000,
+		});
+		const adapterB = createYjsAdapter({
+			doc: docB,
+			peer: { id: "bob" },
+			staleAfterMs: 5000,
+		});
+
+		// Establish a shared baseline so both replicas know the same
+		// pre-edit state. Alice's first save propagates to Bob, and
+		// Bob's first save (echoing Alice's headline back) lets Alice's
+		// conflict module observe the baseline on the next save.
+		adapterA.save(withHero({ headline: "shared", description: "shared" }), {});
+		adapterB.save(withHero({ headline: "shared", description: "shared" }), {});
+
+		const events: ConflictEvent[] = [];
+		adapterA.onConflict((e) => events.push(e));
+
+		// Concurrent disjoint edits: Alice in headline, Bob in
+		// description. With baseline tracking, this is NOT a conflict.
+		adapterA.save(
+			withHero({ headline: "alice-typed", description: "shared" }),
+			{},
+		);
+		adapterB.save(
+			withHero({ headline: "shared", description: "bob-typed" }),
+			{},
+		);
+
+		expect(events).toEqual([]);
+	});
+
+	it("DOES fire when peers edit the SAME prop with different values within the conflict window", () => {
+		// Companion to the disjoint-prop test: the baseline-aware
+		// check must still catch real conflicts. Same setup, but both
+		// peers race on `headline`.
+		const docA = new YDoc();
+		const docB = new YDoc();
+		pair(docA, docB);
+
+		const adapterA = createYjsAdapter({
+			doc: docA,
+			peer: { id: "alice" },
+			staleAfterMs: 5000,
+		});
+		const adapterB = createYjsAdapter({
+			doc: docB,
+			peer: { id: "bob" },
+			staleAfterMs: 5000,
+		});
+
+		adapterA.save(withHero({ headline: "shared" }), {});
+		adapterB.save(withHero({ headline: "shared" }), {});
+
+		const events: ConflictEvent[] = [];
+		adapterA.onConflict((e) => events.push(e));
+
+		adapterA.save(withHero({ headline: "alice-typed" }), {});
+		adapterB.save(withHero({ headline: "bob-typed" }), {});
+
+		expect(events.length).toBeGreaterThanOrEqual(1);
+		expect(events[0]?.nodeIds).toContain("hero-1");
+	});
 });
