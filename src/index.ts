@@ -1,4 +1,7 @@
-export { createDebouncedAdapter } from "./debounced-adapter.js";
+export {
+	DebouncedAdapterDestroyedError,
+	createDebouncedAdapter,
+} from "./debounced-adapter.js";
 export { decodeIR, encodeIR, hashIR } from "./encode.js";
 export { createCollabPlugin } from "./plugin.js";
 export { usePuckSelection } from "./selection-bridge.js";
