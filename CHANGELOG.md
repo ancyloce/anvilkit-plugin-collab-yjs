@@ -1,5 +1,47 @@
 # @anvilkit/plugin-collab-yjs
 
+## 0.10.0-rc.1
+
+### Patch Changes
+
+- Rename data-only factory: `createCollabPlugin` → `createCollabDataPlugin`.
+
+  The package's `createCollabPlugin` export has been renamed
+  `createCollabDataPlugin` to disambiguate it from the higher-level
+  `createCollabPlugin` that the new `@anvilkit/plugin-collab-ui` package
+  exports (which bundles the data plugin together with React providers,
+  overlays, and chrome slot contributions).
+
+  `createCollabPlugin` remains exported as a deprecated alias for one
+  minor release and emits a one-shot `console.warn` on first call. The
+  alias will be removed in the next minor.
+
+  Migration:
+
+  ```diff
+  - import { createCollabPlugin } from "@anvilkit/plugin-collab-yjs";
+  + import { createCollabDataPlugin } from "@anvilkit/plugin-collab-yjs";
+
+  - const plugin = createCollabPlugin({ adapter });
+  + const plugin = createCollabDataPlugin({ adapter });
+  ```
+
+  If you want the full data + UI bundle (presence cursors, conflict
+  toasts, collaborator stack), prefer:
+
+  ```ts
+  import { createCollabPlugin } from "@anvilkit/plugin-collab-ui";
+  ```
+
+  `createYjsAdapter`, `createDebouncedAdapter`, all presence/policy types,
+  and every other low-level export are unchanged.
+
+- Updated dependencies
+  - @anvilkit/core@0.1.2
+  - @anvilkit/ir@0.1.2
+  - @anvilkit/plugin-version-history@0.1.2
+  - @anvilkit/utils@0.1.2
+
 ## 0.10.0-rc.0 — 2026-05-14
 
 Long-term plan execution (L1-L6 from
@@ -47,13 +89,13 @@ hardening, cross-tab persistence, and Hocuspocus production guidance.
     other tabs on the same origin so two tabs of the same app see
     each other's edits without round-tripping through the transport.
     A per-adapter `instanceId` echo guard drops self-loops.
-  Both backends feature-detect at construction time and degrade
-  silently to no-ops when the underlying API is unavailable (SSR,
-  older Node versions, certain test environments). Quota errors,
-  schema-version mismatches, and `BroadcastChannel` construction
-  failures route through the optional `persistence.onFault`
-  callback. When persistence is enabled,
-  `getStatus().queuedEdits` reads directly from the IDB queue.
+    Both backends feature-detect at construction time and degrade
+    silently to no-ops when the underlying API is unavailable (SSR,
+    older Node versions, certain test environments). Quota errors,
+    schema-version mismatches, and `BroadcastChannel` construction
+    failures route through the optional `persistence.onFault`
+    callback. When persistence is enabled,
+    `getStatus().queuedEdits` reads directly from the IDB queue.
 - **L6 — Hocuspocus deployment recipe.** New
   `docs/hocuspocus-deployment.md` documents production-ready
   deployment with auth (`onAuthenticate` hook), durable Postgres
