@@ -23,7 +23,6 @@ import {
 } from "@anvilkit/core/testing";
 import { compilePlugins } from "@anvilkit/core";
 import type {
-	PeerInfo,
 	SnapshotAdapter,
 	SnapshotMeta,
 } from "@anvilkit/plugin-version-history";
@@ -33,7 +32,6 @@ import { createCollabDataPlugin, createCollabPlugin } from "../plugin.js";
 
 function fakeAdapter(): SnapshotAdapter {
 	let saved = createFakePageIR();
-	let listener: ((ir: typeof saved, peer?: PeerInfo) => void) | undefined;
 	const snapshots: SnapshotMeta[] = [];
 	return {
 		save(ir) {
@@ -52,11 +50,8 @@ function fakeAdapter(): SnapshotAdapter {
 		load() {
 			return saved;
 		},
-		subscribe(onUpdate) {
-			listener = onUpdate;
-			return () => {
-				listener = undefined;
-			};
+		subscribe(_onUpdate) {
+			return () => undefined;
 		},
 	};
 }
