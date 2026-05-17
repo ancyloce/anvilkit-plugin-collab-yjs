@@ -25,8 +25,20 @@ import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-import { createCollabDataPlugin } from "../plugin.js";
+import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
+import type { CreateCollabPluginOptions } from "../types.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
+import { syncInboundScheduler } from "./helpers/inbound.js";
+
+// These integration tests drive a remote save through a real Y.Doc and
+// assert the plugin dispatched synchronously; inject the synchronous
+// inbound scheduler so the H1 coalescing deferral doesn't require
+// pumping animation frames.
+const createCollabDataPlugin = (o: CreateCollabPluginOptions) =>
+	baseCollabPlugin({
+		...o,
+		inboundScheduler: o.inboundScheduler ?? syncInboundScheduler(),
+	});
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
 

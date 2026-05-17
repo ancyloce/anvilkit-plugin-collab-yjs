@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDebouncedAdapter } from "../debounced-adapter.js";
 import { createCollabDataPlugin } from "../plugin.js";
+import { syncInboundScheduler } from "./helpers/inbound.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
 
@@ -85,9 +86,13 @@ describe("createCollabDataPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 
-		const harness = await registerPlugin(createCollabDataPlugin({ adapter }), {
-			ctx,
-		});
+		const harness = await registerPlugin(
+			createCollabDataPlugin({
+				adapter,
+				inboundScheduler: syncInboundScheduler(),
+			}),
+			{ ctx },
+		);
 		await harness.runInit();
 
 		adapter.pushUpdate(undefined, { id: "remote" });
@@ -136,7 +141,11 @@ describe("createCollabDataPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabDataPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({
+				adapter,
+				puckConfig: STUB_CONFIG,
+				inboundScheduler: syncInboundScheduler(),
+			}),
 			{ ctx },
 		);
 		await harness.runInit();
@@ -172,7 +181,11 @@ describe("createCollabDataPlugin", () => {
 			) as unknown as StudioPluginContext["getPuckApi"],
 		});
 		const harness = await registerPlugin(
-			createCollabDataPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			createCollabDataPlugin({
+				adapter,
+				puckConfig: STUB_CONFIG,
+				inboundScheduler: syncInboundScheduler(),
+			}),
 			{ ctx },
 		);
 		await harness.runInit();
@@ -206,6 +219,7 @@ describe("createCollabDataPlugin", () => {
 				adapter,
 				validateRemoteIR: () => null,
 				onValidationFailure,
+				inboundScheduler: syncInboundScheduler(),
 			}),
 			{ ctx },
 		);
@@ -241,6 +255,7 @@ describe("createCollabDataPlugin", () => {
 					throw new Error("not a valid IR");
 				},
 				onValidationFailure,
+				inboundScheduler: syncInboundScheduler(),
 			}),
 			{ ctx },
 		);
@@ -267,6 +282,7 @@ describe("createCollabDataPlugin", () => {
 			createCollabDataPlugin({
 				adapter,
 				validateRemoteIR: () => replacement,
+				inboundScheduler: syncInboundScheduler(),
 			}),
 			{ ctx },
 		);

@@ -26,8 +26,18 @@ import type {
 import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { createCollabDataPlugin } from "../plugin.js";
-import type { PolicyViolation } from "../types.js";
+import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
+import type { CreateCollabPluginOptions, PolicyViolation } from "../types.js";
+import { syncInboundScheduler } from "./helpers/inbound.js";
+
+// All policy tests assert dispatch/log synchronously after
+// `adapter.pushUpdate`; inject the synchronous inbound scheduler so
+// the H1 coalescing deferral doesn't require pumping timers here.
+const createCollabDataPlugin = (o: CreateCollabPluginOptions) =>
+	baseCollabPlugin({
+		...o,
+		inboundScheduler: o.inboundScheduler ?? syncInboundScheduler(),
+	});
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
 

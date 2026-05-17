@@ -13,9 +13,22 @@ import type {
 import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { createCollabPlugin } from "../plugin.js";
+import { createCollabPlugin as baseCollabPlugin } from "../plugin.js";
+import type { CreateCollabPluginOptions } from "../types.js";
+import { syncInboundScheduler } from "./helpers/inbound.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
+
+// Echo-detection asserts the exact-key pendingRemoteData fallback
+// synchronously after pushUpdate; the synchronous scheduler keeps each
+// dispatch inline (no coalescing) so the refcount semantics under test
+// are exercised deterministically. Dedicated coalescing behavior is
+// covered by inbound-scheduler.test.ts.
+const createCollabPlugin = (o: CreateCollabPluginOptions) =>
+	baseCollabPlugin({
+		...o,
+		inboundScheduler: o.inboundScheduler ?? syncInboundScheduler(),
+	});
 
 function fakeAdapter() {
 	let saved = createFakePageIR();
