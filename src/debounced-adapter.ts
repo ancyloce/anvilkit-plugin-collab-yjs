@@ -163,6 +163,13 @@ export function createDebouncedAdapter(
 							syncLatencySamples: 0,
 							degraded: false,
 							presenceValidationFailures: 0,
+							inboundCoalesced: 0,
+							inboundQueueDelayP50Ms: null,
+							conversionTimeP50Ms: null,
+							dispatchTimeP50Ms: null,
+							saveEncodeTimeP50Ms: null,
+							nativeApplyTimeP50Ms: null,
+							nativeReadTimeP50Ms: null,
 						};
 					}
 					return {
