@@ -4,6 +4,7 @@ import * as Y from "yjs";
 import {
 	NATIVE_ASSETS_KEY,
 	NATIVE_METADATA_KEY,
+	NATIVE_NODE_PREFIX,
 	NATIVE_ROOT_ID_KEY,
 	NATIVE_VERSION_KEY,
 	nativeNodeKey,
@@ -52,6 +53,57 @@ export {
 
 interface NodeYMap extends Y.Map<unknown> {}
 
+/**
+ * Reason a guarded native-tree read bailed out early. Shared Yjs data
+ * is remote-origin and can be malformed or malicious (M4): cycles,
+ * repeated child ids, pathologically deep chains, or an excessive node
+ * count would otherwise recurse until the call stack overflows.
+ */
+export type ReadGuardTrip = "cycle" | "max-depth" | "max-nodes";
+
+export interface ReadGuardOptions {
+	/** Maximum tree depth before bailing. Default 5000. */
+	readonly maxDepth?: number;
+	/** Maximum total node count before bailing. Default 200000. */
+	readonly maxNodes?: number;
+	/**
+	 * Invoked once per read the first time any guard trips. Hosts wire
+	 * this to `metrics.setDegraded(true)` so a truncated decode surfaces
+	 * instead of silently dropping nodes.
+	 */
+	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
+}
+
+const DEFAULT_MAX_DEPTH = 5000;
+const DEFAULT_MAX_NODES = 200000;
+
+interface ReadGuard {
+	readonly visited: Set<string>;
+	count: number;
+	readonly maxDepth: number;
+	readonly maxNodes: number;
+	tripped: boolean;
+	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
+}
+
+function createReadGuard(options?: ReadGuardOptions): ReadGuard {
+	return {
+		visited: new Set<string>(),
+		count: 0,
+		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+		maxNodes: options?.maxNodes ?? DEFAULT_MAX_NODES,
+		tripped: false,
+		onGuardTrip: options?.onGuardTrip,
+	};
+}
+
+function trip(guard: ReadGuard, reason: ReadGuardTrip): void {
+	if (!guard.tripped) {
+		guard.tripped = true;
+		guard.onGuardTrip?.(reason);
+	}
+}
+
 export function applyIRToNativeTree(
 	root: Y.Map<unknown>,
 	ir: PageIR,
@@ -92,11 +144,15 @@ export function applyIRToNativeTree(
 	}
 }
 
-export function readNativeTree(root: Y.Map<unknown>): PageIR | undefined {
+export function readNativeTree(
+	root: Y.Map<unknown>,
+	options?: ReadGuardOptions,
+): PageIR | undefined {
 	const version = root.get(NATIVE_VERSION_KEY);
 	const rootId = root.get(NATIVE_ROOT_ID_KEY);
 	if (version !== "1" || typeof rootId !== "string") return undefined;
-	const rootNode = readNode(root, rootId);
+	const guard = createReadGuard(options);
+	const rootNode = readNode(root, rootId, guard, 0);
 	if (!rootNode) return undefined;
 	const rawAssets = root.get(NATIVE_ASSETS_KEY);
 	const rawMeta = root.get(NATIVE_METADATA_KEY);
@@ -108,6 +164,57 @@ export function readNativeTree(root: Y.Map<unknown>): PageIR | undefined {
 		assets,
 		metadata,
 	} as PageIR;
+}
+
+/**
+ * Map a batch of `Y.Map.observeDeep` events into the set of node ids
+ * whose subtree changed, plus a `structural` flag that forces the
+ * incremental live-IR cache to fall back to a full rebuild (H3).
+ *
+ * `structural` is set when the change cannot be applied as a pure
+ * node-local prop patch: a `version`/`rootId` change, an `assets`/
+ * `metadata` change, a `node:<id>` map added/removed at the root, or
+ * any `childIds` reorder/membership change (which moves nodes between
+ * parents).
+ */
+export function deriveChangedNodeIds(
+	events: readonly Y.YEvent<Y.AbstractType<unknown>>[],
+): {
+	ids: Set<string>;
+	structural: boolean;
+} {
+	const ids = new Set<string>();
+	let structural = false;
+	for (const event of events) {
+		const path = event.path;
+		if (path.length === 0) {
+			// Event on the tree root map itself.
+			for (const key of event.changes.keys.keys()) {
+				if (
+					key === NATIVE_VERSION_KEY ||
+					key === NATIVE_ROOT_ID_KEY ||
+					key === NATIVE_ASSETS_KEY ||
+					key === NATIVE_METADATA_KEY
+				) {
+					structural = true;
+				} else if (key.startsWith(NATIVE_NODE_PREFIX)) {
+					// A whole node Y.Map was added or removed.
+					structural = true;
+					ids.add(key.slice(NATIVE_NODE_PREFIX.length));
+				}
+			}
+			continue;
+		}
+		const first = path[0];
+		if (typeof first !== "string" || !first.startsWith(NATIVE_NODE_PREFIX)) {
+			continue;
+		}
+		ids.add(first.slice(NATIVE_NODE_PREFIX.length));
+		// A childIds reorder/membership change relinks the tree, so a
+		// node-local patch is insufficient — force a full rebuild.
+		if (path.includes("childIds")) structural = true;
+	}
+	return { ids, structural };
 }
 
 function writeNode(
@@ -209,7 +316,81 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 	return a.every((v, i) => v === b[i]);
 }
 
-function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
+/**
+ * Reconstruct a single node and its subtree from the flat native tree,
+ * guarded against cycles/depth/node-count. Exported so the incremental
+ * live-IR cache (`live-ir.ts`) can re-read only changed subtrees instead
+ * of rebuilding the whole document on every remote event (H3).
+ */
+export function readSubtree(
+	root: Y.Map<unknown>,
+	id: string,
+	options?: ReadGuardOptions,
+): PageIRNode | undefined {
+	return readNode(root, id, createReadGuard(options), 0);
+}
+
+function readNode(
+	root: Y.Map<unknown>,
+	id: string,
+	guard: ReadGuard,
+	depth: number,
+): PageIRNode | undefined {
+	if (guard.tripped) return undefined;
+	if (depth > guard.maxDepth) {
+		trip(guard, "max-depth");
+		return undefined;
+	}
+	if (guard.visited.has(id)) {
+		// Repeated id across the traversal == cycle or duplicated child
+		// (the IR contract is a tree, not a DAG). Stop expanding rather
+		// than recurse forever.
+		trip(guard, "cycle");
+		return undefined;
+	}
+	guard.count += 1;
+	if (guard.count > guard.maxNodes) {
+		trip(guard, "max-nodes");
+		return undefined;
+	}
+	guard.visited.add(id);
+	const own = parseNodeOwn(root, id);
+	if (!own) return undefined;
+	const { node, childIds } = own;
+	const children: PageIRNode[] = [];
+	for (const childId of childIds) {
+		const child = readNode(root, childId, guard, depth + 1);
+		if (child) children.push(child);
+	}
+	if (children.length > 0) node.children = children;
+	return node as unknown as PageIRNode;
+}
+
+/**
+ * A node's own scalar/prop fields plus the raw ordered child id list,
+ * WITHOUT recursing into children. The incremental live-IR cache
+ * (`live-ir.ts`, H3) re-reads only the changed nodes through this and
+ * relinks the tree itself, so an unchanged node's props are never
+ * re-`JSON.parse`d on a remote event.
+ */
+export interface ShallowNativeNode {
+	/** Node minus `children` — assignable into a `PageIRNode`. */
+	readonly node: Record<string, unknown>;
+	readonly childIds: readonly string[];
+}
+
+/** Parse one node's own fields + child id list (no recursion). */
+export function readNodeShallow(
+	root: Y.Map<unknown>,
+	id: string,
+): ShallowNativeNode | undefined {
+	return parseNodeOwn(root, id);
+}
+
+function parseNodeOwn(
+	root: Y.Map<unknown>,
+	id: string,
+): { node: Record<string, unknown>; childIds: string[] } | undefined {
 	const map = root.get(nativeNodeKey(id));
 	if (!(map instanceof Y.Map)) return undefined;
 	const type = map.get("type");
@@ -226,13 +407,11 @@ function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
 			}
 		}
 	}
-	const childIds = map.get("childIds");
-	const children: PageIRNode[] = [];
-	if (childIds instanceof Y.Array) {
-		for (const childId of childIds.toArray()) {
-			if (typeof childId !== "string") continue;
-			const child = readNode(root, childId);
-			if (child) children.push(child);
+	const childIdsRaw = map.get("childIds");
+	const childIds: string[] = [];
+	if (childIdsRaw instanceof Y.Array) {
+		for (const childId of childIdsRaw.toArray()) {
+			if (typeof childId === "string") childIds.push(childId);
 		}
 	}
 	const slot = map.get("slot");
@@ -240,14 +419,9 @@ function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
 	const rawAssets = map.get("assets");
 	const rawMeta = map.get("meta");
 
-	const node: Record<string, unknown> = {
-		id,
-		type,
-		props,
-	};
+	const node: Record<string, unknown> = { id, type, props };
 	if (typeof slot === "string") node.slot = slot;
 	if (typeof slotKind === "string") node.slotKind = slotKind;
-	if (children.length > 0) node.children = children;
 	if (typeof rawAssets === "string") {
 		const assets = parseJSONOr(rawAssets, undefined);
 		if (Array.isArray(assets)) node.assets = assets;
@@ -258,7 +432,7 @@ function readNode(root: Y.Map<unknown>, id: string): PageIRNode | undefined {
 			node.meta = meta;
 		}
 	}
-	return node as unknown as PageIRNode;
+	return { node, childIds };
 }
 
 function walkNodes(root: PageIRNode, visit: (node: PageIRNode) => void): void {
