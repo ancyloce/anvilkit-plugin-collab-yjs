@@ -92,16 +92,48 @@ export function createAwarenessBridge(
 		onPeerChange(
 			callback: (peers: readonly PresenceState[]) => void,
 		): Unsubscribe {
-			const handler = () => {
-				const peers: PresenceState[] = [];
-				for (const value of awareness.getStates().values()) {
-					const validated = validatePresenceState(value);
-					if (validated !== null) peers.push(validated);
-					else if (value !== undefined && value !== null) {
-						metrics.incPresenceValidationFailure();
-					}
+			// M5 — keep a validated peer cache keyed by client id and
+			// update only the clients named in each awareness change
+			// delta, instead of re-validating EVERY peer's state on
+			// every cursor tick. Large rooms / high cursor churn now
+			// cost O(changed) per event rather than O(peers).
+			const cache = new Map<number, PresenceState>();
+			let seeded = false;
+
+			const refreshClient = (clientId: number): void => {
+				const value = awareness.getStates().get(clientId);
+				if (value === undefined) {
+					cache.delete(clientId);
+					return;
 				}
-				callback(peers);
+				const validated = validatePresenceState(value);
+				if (validated !== null) {
+					cache.set(clientId, validated);
+				} else {
+					cache.delete(clientId);
+					if (value !== null) metrics.incPresenceValidationFailure();
+				}
+			};
+
+			const handler = (changes?: {
+				added: number[];
+				updated: number[];
+				removed: number[];
+			}) => {
+				if (!seeded || !changes) {
+					// Initial subscribe (no delta) or a defensive full
+					// rebuild: validate every current peer once.
+					cache.clear();
+					for (const clientId of awareness.getStates().keys()) {
+						refreshClient(clientId);
+					}
+					seeded = true;
+				} else {
+					for (const clientId of changes.added) refreshClient(clientId);
+					for (const clientId of changes.updated) refreshClient(clientId);
+					for (const clientId of changes.removed) cache.delete(clientId);
+				}
+				callback([...cache.values()]);
 			};
 			awareness.on("change", handler);
 			peerChangeHandlers.add(handler);
