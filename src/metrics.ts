@@ -1,7 +1,26 @@
-import type { MetricsSnapshot } from "./types.js";
+import type { MetricsSnapshot, TimingKind } from "./types.js";
+
+// Re-exported for existing importers (plugin.ts) — canonical home is
+// types.ts so metrics.ts and types.ts don't form an import cycle.
+export type { TimingKind } from "./types.js";
+
+/**
+ * Process-monotonic sequence woven into snapshot ids immediately after
+ * the millisecond timestamp. `SnapshotMeta` ordering is `savedAt`
+ * (ISO, millisecond resolution) then `id.localeCompare`; when several
+ * saves — including saves from DIFFERENT adapters on the same doc —
+ * land in the same millisecond, the wall clock cannot disambiguate
+ * them and the previous random id suffix made the "latest" snapshot
+ * non-deterministic (a flaky round-trip). A fixed-width, lexicographic
+ * monotonic segment makes in-process save order the deterministic
+ * tiebreaker. The per-adapter counter + random suffix are retained for
+ * cross-process collision resistance (L2).
+ */
+let globalSnapshotSeq = 0;
 
 const LATENCY_WINDOW_SIZE = 200;
 const CHURN_WINDOW_MS = 5 * 60_000;
+const TIMING_WINDOW_SIZE = 200;
 
 export interface MetricsState {
 	recordObservationLatency(savedAt: number): void;
@@ -10,6 +29,10 @@ export interface MetricsState {
 	incChurn(): void;
 	incPresenceValidationFailure(): void;
 	setDegraded(value: boolean): void;
+	/** Count remote IRs superseded in the inbound buffer before flush (H1). */
+	incInboundCoalesced(n?: number): void;
+	/** Record a hot-path stage duration in milliseconds (P1). */
+	recordTiming(kind: TimingKind, ms: number): void;
 	createSnapshotId(): string;
 	snapshot(): MetricsSnapshot;
 }
@@ -38,8 +61,30 @@ export function createMetricsState(): MetricsState {
 	let presenceValidationFailures = 0;
 	let degraded = false;
 	let snapshotCounter = 0;
+	let inboundCoalesced = 0;
 	const latencyWindow: number[] = [];
 	const churnTimestamps: number[] = [];
+	const timingWindows = new Map<TimingKind, number[]>();
+
+	function recordTiming(kind: TimingKind, ms: number): void {
+		if (!Number.isFinite(ms) || ms < 0) return;
+		let window = timingWindows.get(kind);
+		if (window === undefined) {
+			window = [];
+			timingWindows.set(kind, window);
+		}
+		window.push(ms);
+		if (window.length > TIMING_WINDOW_SIZE) window.shift();
+	}
+
+	function timingP50(kind: TimingKind): number | null {
+		const window = timingWindows.get(kind);
+		if (window === undefined || window.length === 0) return null;
+		return percentile(
+			[...window].sort((a, b) => a - b),
+			0.5,
+		);
+	}
 
 	function trimChurnWindow(now: number): void {
 		const cutoff = now - CHURN_WINDOW_MS;
@@ -72,10 +117,18 @@ export function createMetricsState(): MetricsState {
 		setDegraded(value: boolean): void {
 			degraded = value;
 		},
+		incInboundCoalesced(n = 1): void {
+			if (Number.isFinite(n) && n > 0) inboundCoalesced += n;
+		},
+		recordTiming,
 		createSnapshotId(): string {
 			const counter = snapshotCounter;
 			snapshotCounter += 1;
-			return `snap-${Date.now().toString(36)}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
+			const seq = globalSnapshotSeq;
+			globalSnapshotSeq += 1;
+			// seq before counter so lexicographic id order == in-process
+			// save order within a same-millisecond tie.
+			return `snap-${Date.now().toString(36)}-${seq.toString(36).padStart(10, "0")}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
 		},
 		snapshot(): MetricsSnapshot {
 			trimChurnWindow(Date.now());
@@ -91,9 +144,28 @@ export function createMetricsState(): MetricsState {
 				syncLatencySamples: sorted.length,
 				degraded,
 				presenceValidationFailures,
+				inboundCoalesced,
+				inboundQueueDelayP50Ms: timingP50("inboundQueueDelay"),
+				conversionTimeP50Ms: timingP50("conversion"),
+				dispatchTimeP50Ms: timingP50("dispatch"),
+				saveEncodeTimeP50Ms: timingP50("saveEncode"),
+				nativeApplyTimeP50Ms: timingP50("nativeApply"),
+				nativeReadTimeP50Ms: timingP50("nativeRead"),
 			};
 		},
 	};
+}
+
+/**
+ * Monotonic high-resolution clock for hot-path timing. Falls back to
+ * `Date.now()` where `performance` is unavailable (older Node, some
+ * SSR shims) so timing recording never throws.
+ */
+export function nowMs(): number {
+	return typeof performance !== "undefined" &&
+		typeof performance.now === "function"
+		? performance.now()
+		: Date.now();
 }
 
 function percentile(sorted: readonly number[], q: number): number | null {
