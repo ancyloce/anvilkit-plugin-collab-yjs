@@ -8,9 +8,13 @@
  * selection ring without hand-wiring Puck's selection events.
  *
  * The hook re-renders the calling component only when the selected
- * node id changes — Puck's selector hook compares results with
- * `Object.is`, so projecting `selectedItem.props.id` keeps the cost
- * identical to a Zustand selector subscription.
+ * node id changes. It selects the PRIMITIVE id string first — Puck's
+ * selector hook compares results with `Object.is`, and a string is
+ * stable across renders — then memoizes the `{ nodeIds: [id] }`
+ * wrapper with `useMemo` keyed by that id. The previous implementation
+ * returned a fresh object (and fresh array) on every selector
+ * evaluation, so `Object.is` always saw a new reference and every
+ * consumer effect re-ran on unrelated Puck state changes (M2).
  */
 
 import type { PresenceSelection } from "@anvilkit/plugin-version-history";
@@ -18,10 +22,11 @@ import {
 	createUsePuck,
 	type ComponentData as PuckComponentData,
 } from "@puckeditor/core";
+import { useMemo } from "react";
 
-type PuckSelectorHook = <T>(
-	selector: (state: { readonly selectedItem: PuckComponentData | null }) => T,
-) => T;
+type PuckSelectorState = { readonly selectedItem: PuckComponentData | null };
+
+type PuckSelectorHook = <T>(selector: (state: PuckSelectorState) => T) => T;
 
 // Lazy-initialized so test mocks of `@puckeditor/core` (which may not
 // stub `createUsePuck`) don't blow up at module-evaluate time.
@@ -60,22 +65,37 @@ function getUsePuckSelection(): PuckSelectorHook {
  */
 export function usePuckSelection(): PresenceSelection | null {
 	const usePuckSelection = getUsePuckSelection();
-	return usePuckSelection(selectPresenceSelection);
+	// Select the primitive id: `Object.is` over a string is stable, so
+	// the underlying store subscription only re-renders this hook when
+	// the SELECTED NODE actually changes — not on every unrelated Puck
+	// state mutation.
+	const id = usePuckSelection(selectSelectedId);
+	return useMemo(() => (id === null ? null : { nodeIds: [id] }), [id]);
+}
+
+/**
+ * Pure projection to the primitive selected node id (or `null`).
+ * Exported for unit tests; this is the value the store subscription
+ * compares with `Object.is`.
+ */
+export function selectSelectedId(state: PuckSelectorState): string | null {
+	const item = state.selectedItem;
+	if (item === null) return null;
+	return readId(item) ?? null;
 }
 
 /**
  * Pure projection from Puck's selector state to `PresenceSelection`.
  * Exported so unit tests can exercise the selection rules without
- * mounting the editor.
+ * mounting the editor. Note: callers in render should prefer
+ * {@link usePuckSelection} — this allocates a fresh object per call
+ * and is not reference-stable by design.
  */
-export function selectPresenceSelection(state: {
-	readonly selectedItem: PuckComponentData | null;
-}): PresenceSelection | null {
-	const item = state.selectedItem;
-	if (item === null) return null;
-	const id = readId(item);
-	if (id === undefined) return null;
-	return { nodeIds: [id] };
+export function selectPresenceSelection(
+	state: PuckSelectorState,
+): PresenceSelection | null {
+	const id = selectSelectedId(state);
+	return id === null ? null : { nodeIds: [id] };
 }
 
 function readId(item: PuckComponentData): string | undefined {
