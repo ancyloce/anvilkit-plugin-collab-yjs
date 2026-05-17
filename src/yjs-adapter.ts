@@ -12,11 +12,12 @@ import { createConflicts } from "./conflicts.js";
 import { createConnectionStatus } from "./connection-status.js";
 import { decodeIR } from "./encode.js";
 import { DEFAULT_MAP_NAME, LAST_PEER_KEY, PAGE_IR_KEY } from "./keys.js";
-import { createMetricsState } from "./metrics.js";
+import { createLiveIRState } from "./live-ir.js";
+import { createMetricsState, nowMs } from "./metrics.js";
 import {
 	applyIRToNativeTree,
+	deriveChangedNodeIds,
 	NATIVE_VERSION_KEY,
-	readNativeTree,
 } from "./native-tree.js";
 import { createPersistence } from "./persistence/index.js";
 import { validatePeerInfo } from "./presence-schema.js";
@@ -91,6 +92,12 @@ export function createYjsAdapter(
 
 	const metrics = createMetricsState();
 	const conflicts = createConflicts(staleAfterMs, localPeer);
+	// H3 — in-memory authoritative live IR. A guard trip (cycle, depth,
+	// or node-count overflow from malformed/hostile remote tree data,
+	// M4) degrades the adapter so hosts can surface the regression.
+	const liveIR = createLiveIRState({
+		onGuardTrip: () => metrics.setDegraded(true),
+	});
 	const persistence = createPersistence({
 		options: options.persistence,
 		mapName: options.mapName ?? DEFAULT_MAP_NAME,
@@ -124,6 +131,7 @@ export function createYjsAdapter(
 		localPeer,
 		metrics,
 		conflicts,
+		liveIR,
 		getCurrentStatus: () => connectionStatus.getStatus(),
 		computeDelta: options.computeDelta ?? false,
 	});
@@ -133,39 +141,79 @@ export function createYjsAdapter(
 		options.awarenessRateLimit,
 	);
 
+	function dispatchRemote(remoteIR: PageIR, peer: PeerInfo | undefined): void {
+		conflicts.maybeFire(remoteIR, peer);
+		conflicts.closeWindow();
+		conflicts.setLastLocalIR(remoteIR);
+		snapshots.emitToSubscribers(remoteIR, peer);
+	}
+
+	// H3 — the native-tree deep observer is the PRIMARY remote-dispatch
+	// path. Native-mode saves update the tree incrementally and no
+	// longer rewrite the whole-document `PAGE_IR_KEY` blob every edit,
+	// so keying remote detection off that blob would miss live edits.
+	// The legacy `map.observe` below is now only a back-compat fallback
+	// for transactions that touched `PAGE_IR_KEY` WITHOUT touching the
+	// tree (old/legacy-mode writers, raw forceResync from a stale peer).
+	const treeObserver = treeRoot
+		? (
+				events: Y.YEvent<Y.AbstractType<unknown>>[],
+				transaction: Y.Transaction,
+			) => {
+				if (isLocalOrigin(transaction.origin, localPeer)) return;
+				const { ids, structural } = deriveChangedNodeIds(events);
+				if (ids.size === 0 && !structural) return;
+				const savedAt = snapshots.getLastLocalSavedAt();
+				if (savedAt !== undefined) metrics.recordObservationLatency(savedAt);
+				// LAST_PEER_KEY is written by every save in the same
+				// transaction as the tree write, so the latest value is
+				// the authoring peer of this change.
+				const peer = snapshots.readLastPeer();
+				const readStart = nowMs();
+				const remoteIR = liveIR.applyRemoteChangedNodes(
+					treeRoot,
+					ids,
+					structural,
+				);
+				metrics.recordTiming("nativeRead", nowMs() - readStart);
+				if (!remoteIR) return;
+				dispatchRemote(remoteIR, peer);
+			}
+		: undefined;
+	if (treeRoot && treeObserver) treeRoot.observeDeep(treeObserver);
+
 	const observer = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
 		if (!event.changes.keys.has(PAGE_IR_KEY)) return;
 		if (isLocalOrigin(transaction.origin, localPeer)) return;
+		// When the native tree was touched in the same transaction the
+		// deep observer already handled (and will emit) this update —
+		// skip to avoid a double dispatch. Order-independent: we test
+		// the transaction's changed-type set, not observer fire order.
+		if (
+			treeRoot &&
+			transaction.changed.has(
+				treeRoot as unknown as Y.AbstractType<
+					Y.YEvent<Y.AbstractType<unknown>>
+				>,
+			)
+		) {
+			return;
+		}
 		const savedAt = snapshots.getLastLocalSavedAt();
 		if (savedAt !== undefined) metrics.recordObservationLatency(savedAt);
 		const peer = event.changes.keys.has(LAST_PEER_KEY)
 			? snapshots.readLastPeer()
 			: undefined;
+		// readCurrentIR preserves the legacy tree-then-blob fallback
+		// (and the degraded-on-decode-failure flag). Sync the live cache
+		// so a subsequent tree event reads incrementally from fresh
+		// state rather than a stale snapshot.
 		const remoteIR = snapshots.readCurrentIR();
 		if (!remoteIR) return;
-		conflicts.maybeFire(remoteIR, peer);
-		conflicts.closeWindow();
-		conflicts.setLastLocalIR(remoteIR);
-		snapshots.emitToSubscribers(remoteIR, peer);
+		if (treeRoot) liveIR.applyRemoteFullBlob(remoteIR);
+		dispatchRemote(remoteIR, peer);
 	};
 	map.observe(observer);
-
-	const treeObserver = treeRoot
-		? (
-				_events: Y.YEvent<Y.AbstractType<unknown>>[],
-				transaction: Y.Transaction,
-			) => {
-				if (isLocalOrigin(transaction.origin, localPeer)) return;
-				// The PAGE_IR_KEY observer above handles remote dispatch
-				// when both land in the same transaction. The tree
-				// observer keeps `lastLocalIR` synced with merged tree
-				// state when only the tree changed (future tree-only
-				// save path).
-				const remoteIR = readNativeTree(treeRoot);
-				if (remoteIR) conflicts.setLastLocalIR(remoteIR);
-			}
-		: undefined;
-	if (treeRoot && treeObserver) treeRoot.observeDeep(treeObserver);
 
 	// L5 — outbound update wiring. `doc.on("updateV2")` fires for every
 	// transaction, local or remote. We filter to local-origin and:
@@ -263,6 +311,8 @@ export function createYjsAdapter(
 		metrics(): MetricsSnapshot {
 			return metrics.snapshot();
 		},
+		recordTiming: metrics.recordTiming,
+		incInboundCoalesced: metrics.incInboundCoalesced,
 		destroy() {
 			map.unobserve(observer);
 			if (treeRoot && treeObserver) treeRoot.unobserveDeep(treeObserver);
