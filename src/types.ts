@@ -8,6 +8,24 @@ import type { Config } from "@puckeditor/core";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc as YDoc } from "yjs";
 
+import type { InboundSchedulerHandleScheduler } from "./inbound-scheduler.js";
+
+/**
+ * Hot-path stage measured for P1 timing telemetry. Each kind keeps its
+ * own FIFO window so hosts can see exactly where main-thread time goes
+ * under high load (inbound coalescing delay, IR<->Puck conversion,
+ * Puck dispatch, save-time encode/hash, native-tree apply/read).
+ * Defined here (not in metrics.ts) so metrics.ts ↔ types.ts stay
+ * acyclic.
+ */
+export type TimingKind =
+	| "inboundQueueDelay"
+	| "conversion"
+	| "dispatch"
+	| "saveEncode"
+	| "nativeApply"
+	| "nativeRead";
+
 export interface CreateYjsAdapterOptions {
 	readonly doc: YDoc;
 	readonly awareness?: Awareness;
@@ -20,10 +38,11 @@ export interface CreateYjsAdapterOptions {
 	 */
 	readonly staleAfterMs?: number;
 	/**
-	 * Phase 1 opt-in (D1). When `true`, `PageIR` is mirrored as a
+	 * When `true` (the **default**), `PageIR` is mirrored as a
 	 * flat-addressed `Y.Map` tree so concurrent edits to disjoint
-	 * nodes both survive instead of overwriting each other under the
-	 * default whole-document LWW. Default: `false`.
+	 * nodes both survive instead of overwriting each other under
+	 * whole-document LWW. Set `false` to opt back into the legacy
+	 * whole-document JSON-blob encoding. Default: `true`.
 	 *
 	 * Native-tree replicas and legacy JSON-blob replicas cannot share
 	 * a Y.Doc — pick one mode per room.
@@ -238,6 +257,30 @@ export interface MetricsSnapshot {
 	 * catch the regression early instead of silently dropping bad peers.
 	 */
 	readonly presenceValidationFailures: number;
+	/**
+	 * Number of inbound remote IRs that were superseded in the
+	 * latest-wins coalescing buffer before they could be dispatched
+	 * (H1). A non-zero value means the adapter is actively protecting
+	 * the editor from a high-frequency remote burst — the host saw the
+	 * latest state without paying for every intermediate one.
+	 */
+	readonly inboundCoalesced: number;
+	/**
+	 * p50 delay in milliseconds between a remote IR being enqueued and
+	 * the coalescing scheduler flushing it to Puck, or `null` if no
+	 * samples. Rises when the main thread is saturated.
+	 */
+	readonly inboundQueueDelayP50Ms: number | null;
+	/** p50 IR<->Puck conversion time (ms), or `null` if no samples. */
+	readonly conversionTimeP50Ms: number | null;
+	/** p50 Puck dispatch time (ms) for a remote update, or `null`. */
+	readonly dispatchTimeP50Ms: number | null;
+	/** p50 save-time IR encode + hash (ms), or `null` if no samples. */
+	readonly saveEncodeTimeP50Ms: number | null;
+	/** p50 `applyIRToNativeTree` time (ms), or `null` if no samples. */
+	readonly nativeApplyTimeP50Ms: number | null;
+	/** p50 native-tree read/reconstruct time (ms), or `null`. */
+	readonly nativeReadTimeP50Ms: number | null;
 }
 
 /**
@@ -283,6 +326,20 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
 	 * frames). Hosts stream the snapshot to their telemetry sink.
 	 */
 	readonly metrics: () => MetricsSnapshot;
+	/**
+	 * Internal-but-stable hot-path timing sink (P1). The Studio plugin
+	 * records inbound-queue-delay, IR<->Puck conversion, and Puck
+	 * dispatch durations here so they surface in `metrics()` alongside
+	 * the adapter-side encode/apply/read timings. Feature-detected by
+	 * the plugin — a non-Yjs adapter without it simply skips timings.
+	 */
+	readonly recordTiming?: (kind: TimingKind, ms: number) => void;
+	/**
+	 * Internal-but-stable counter sink (H1). The Studio plugin reports
+	 * the number of inbound remote IRs the coalescing scheduler dropped
+	 * here so it surfaces in `metrics().inboundCoalesced`.
+	 */
+	readonly incInboundCoalesced?: (n: number) => void;
 	/**
 	 * Release internal subscriptions (the optional `connectionSource`
 	 * tear-down, status/conflict/subscribe listener sets). Hosts using
@@ -364,7 +421,10 @@ export interface CreateCollabPluginOptions {
 	/**
 	 * Local peer identity used when checking outbound saves and as a
 	 * fallback for inbound checks when the remote peer is unknown. If
-	 * omitted, `policy.canEdit` is invoked with `{ id: "local" }`.
+	 * omitted, the plugin mints a per-instance ephemeral id
+	 * (`local-<uuid>`) and logs a warning — it does NOT fall back to a
+	 * shared `{ id: "local" }`, which used to collapse multi-peer
+	 * sessions into one fake user. Provide a stable id in production.
 	 */
 	readonly localPeer?: PeerInfo;
 	/**
@@ -379,6 +439,18 @@ export interface CreateCollabPluginOptions {
 	 * a toast, telemetry sink, or retry queue.
 	 */
 	readonly onSaveError?: (error: unknown) => void;
+	/**
+	 * H1 — override the inbound coalescing scheduler. Defaults to
+	 * `requestAnimationFrame` (browser editor) or `setTimeout`
+	 * (SSR/Node). Tests inject a manual scheduler to pump flushes
+	 * deterministically; do not set this in production.
+	 */
+	readonly inboundScheduler?: InboundSchedulerHandleScheduler;
+	/**
+	 * H1 — fallback flush cadence in milliseconds when no
+	 * `requestAnimationFrame` is available. Default 16.
+	 */
+	readonly inboundBudgetMs?: number;
 }
 
 export interface CollabPluginRuntime {
