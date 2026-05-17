@@ -8,12 +8,42 @@ import type {
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
+import {
+	createInboundScheduler,
+	type InboundScheduler,
+} from "./inbound-scheduler.js";
+import { type TimingKind, nowMs } from "./metrics.js";
+import {
+	createRemoteDispatchGuard,
+	type RemoteDispatchGuard,
+} from "./remote-guard.js";
 import type {
 	CollabPolicy,
 	CreateCollabPluginOptions,
 	PolicyViolation,
 	ValidationFailure,
 } from "./types.js";
+
+/**
+ * Internal telemetry surface optionally exposed by `createYjsAdapter`
+ * (P1/H1). Feature-detected — a non-Yjs `SnapshotAdapter` simply omits
+ * these and the plugin records nothing.
+ */
+type AdapterTelemetry = {
+	readonly recordTiming?: (kind: TimingKind, ms: number) => void;
+	readonly incInboundCoalesced?: (n: number) => void;
+};
+
+/**
+ * Above this many `replace` actions a single `setData` is cheaper than
+ * dispatching one action per node (P1 replace batching). The crossover
+ * is informed by `bench/plugin-collab-yjs.bench.ts`; 50 is a
+ * conservative default well below the per-keystroke replace counts
+ * (1–2) but under the bulk-edit / paste counts where `setData` wins.
+ */
+const REPLACE_BATCH_THRESHOLD = 50;
+
+const ROOM_KEY = "default";
 
 /**
  * Per-instance fallback peer id used when `options.localPeer` is omitted.
@@ -52,7 +82,9 @@ function sweepPendingRemoteData(
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
 	name: "Collab (Yjs)",
-	version: "0.9.0-rc.1",
+	// Keep in lockstep with package.json — enforced by the metadata
+	// drift guard in src/__tests__/plugin.metadata-drift.test.ts (M1).
+	version: "0.10.0-rc.1",
 	coreVersion: "^0.1.0-alpha",
 	description:
 		"GA-candidate realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree for per-node merge, a transport-agnostic connection-state contract, and force-resync.",
@@ -87,9 +119,14 @@ export function createCollabDataPlugin(
 	options: CreateCollabPluginOptions,
 ): StudioPlugin {
 	let unsubscribe: (() => void) | undefined;
+	let scheduler: InboundScheduler | undefined;
 	const pendingRemoteData = new Map<string, PendingRemoteEntry>();
 	const ephemeralPeer = options.localPeer ?? createEphemeralPeer();
 	const usedEphemeralPeer = options.localPeer === undefined;
+	// H2 — one re-entrant guard per plugin instance, threaded into
+	// dispatchRemoteIR and consulted by onDataChange.
+	const remoteGuard = createRemoteDispatchGuard();
+	const telemetry = options.adapter as AdapterTelemetry;
 
 	return {
 		meta: META,
@@ -112,29 +149,64 @@ export function createCollabDataPlugin(
 							);
 							return;
 						}
-						unsubscribe = options.adapter.subscribe((ir, peer) => {
-							dispatchRemoteIR(
-								initCtx,
-								ir,
-								pendingRemoteData,
-								options,
-								ephemeralPeer,
-								peer,
-							);
+						// H1 — inbound coalescing. The subscribe callback no
+						// longer dispatches synchronously inside the Yjs
+						// call stack; it enqueues latest-wins and the
+						// scheduler flushes ≤ once per animation frame.
+						scheduler = createInboundScheduler({
+							flush: (_room, latestIR, latestPeer, queueDelayMs) => {
+								telemetry.recordTiming?.("inboundQueueDelay", queueDelayMs);
+								dispatchRemoteIR(
+									initCtx,
+									latestIR,
+									pendingRemoteData,
+									options,
+									ephemeralPeer,
+									remoteGuard,
+									telemetry,
+									latestPeer,
+								);
+							},
+							onCoalesced: (n) => telemetry.incInboundCoalesced?.(n),
+							scheduler: options.inboundScheduler,
+							budgetMs: options.inboundBudgetMs,
 						});
+						unsubscribe = options.adapter.subscribe((ir, peer) => {
+							scheduler?.enqueue(ROOM_KEY, ir, peer);
+						});
+						// Hydration deliberately bypasses the scheduler: it
+						// is a one-shot initial paint that must stay
+						// synchronous with onInit so hosts/tests observe
+						// post-init state immediately.
 						await hydrateLatestSnapshot(
 							initCtx,
 							options,
 							pendingRemoteData,
 							ephemeralPeer,
+							remoteGuard,
+							telemetry,
 						);
 					},
 					onDataChange(changeCtx, data) {
-						if (consumePendingRemoteData(data, pendingRemoteData)) {
+						// H2 — suppress every onDataChange emitted during
+						// (and within one frame after) a remote dispatch,
+						// including per-`replace` intermediate states that
+						// the old final-key match let leak into save().
+						if (remoteGuard.withinGraceWindow(Date.now())) return;
+						// M3 — only pay the O(document) stable stringify
+						// echo check when an echo could actually be
+						// pending. The common local-edit path (no remote
+						// in flight, empty map) skips it entirely.
+						if (
+							pendingRemoteData.size > 0 &&
+							consumePendingRemoteData(data, pendingRemoteData)
+						) {
 							return;
 						}
 						if (!options.puckConfig) return;
+						const convStart = nowMs();
 						const ir = puckDataToIR(data, options.puckConfig);
+						telemetry.recordTiming?.("conversion", nowMs() - convStart);
 						const localPeer = ephemeralPeer;
 						const violation = enforcePolicy(
 							ir,
@@ -176,6 +248,10 @@ export function createCollabDataPlugin(
 						}
 					},
 					onDestroy() {
+						if (scheduler) {
+							scheduler.destroy();
+							scheduler = undefined;
+						}
 						if (unsubscribe) {
 							unsubscribe();
 							unsubscribe = undefined;
@@ -197,13 +273,23 @@ async function hydrateLatestSnapshot(
 	options: CreateCollabPluginOptions,
 	pendingRemoteData: Map<string, PendingRemoteEntry>,
 	localPeer: PeerInfo,
+	remoteGuard: RemoteDispatchGuard,
+	telemetry: AdapterTelemetry,
 ): Promise<void> {
 	try {
 		const snapshots = await Promise.resolve(options.adapter.list());
 		const latest = snapshots.at(-1);
 		if (!latest) return;
 		const ir = await Promise.resolve(options.adapter.load(latest.id));
-		dispatchRemoteIR(ctx, ir, pendingRemoteData, options, localPeer);
+		dispatchRemoteIR(
+			ctx,
+			ir,
+			pendingRemoteData,
+			options,
+			localPeer,
+			remoteGuard,
+			telemetry,
+		);
 	} catch (error) {
 		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
 			error: error instanceof Error ? error.message : String(error),
@@ -217,6 +303,8 @@ function dispatchRemoteIR(
 	pendingRemoteData: Map<string, PendingRemoteEntry>,
 	options: CreateCollabPluginOptions,
 	localPeer: PeerInfo,
+	remoteGuard: RemoteDispatchGuard,
+	telemetry: AdapterTelemetry,
 	peer?: PeerInfo,
 ): void {
 	const validated = runValidation(ctx, ir, options);
@@ -237,7 +325,9 @@ function dispatchRemoteIR(
 		options.onPolicyViolation?.(violation);
 		return;
 	}
+	const convStart = nowMs();
 	const data = irToPuckData(validated);
+	telemetry.recordTiming?.("conversion", nowMs() - convStart);
 	const key = stableStringify(data);
 	// Skip the dispatch when the resulting Puck data is structurally
 	// identical to what Puck already holds. This eliminates two
@@ -272,6 +362,14 @@ function dispatchRemoteIR(
 	} else {
 		pendingRemoteData.set(key, { count: 1, addedAt: now });
 	}
+	// H2 — hold the guard active across the ENTIRE dispatch region so
+	// every onDataChange Puck emits per `replace` (plus a late async
+	// onChange, via the guard's grace window) is classified as remote
+	// echo, not a local save. `pendingRemoteData` above stays as the
+	// precise exact-key fallback for an onChange that lands after the
+	// grace window closes.
+	const token = remoteGuard.begin();
+	const dispatchStart = nowMs();
 	try {
 		// Prefer atomic `replace` per changed item over the heavy
 		// `setData` action when the structural shape (`content`
@@ -283,10 +381,14 @@ function dispatchRemoteIR(
 		// field's `useLocalValue` short-circuits on `isFocused`.
 		// Falls through to `setData` for structural changes
 		// (insert/remove/reorder, zone topology shifts) where atomic
-		// replacement isn't enough.
+		// replacement isn't enough, or when the replace count crosses
+		// REPLACE_BATCH_THRESHOLD (P1 — one setData beats N dispatches).
 		const planResult = planReplaceActions(currentData, data);
 		const api = ctx.getPuckApi();
-		if (planResult.actions !== null) {
+		if (
+			planResult.actions !== null &&
+			planResult.actions.length <= REPLACE_BATCH_THRESHOLD
+		) {
 			for (const action of planResult.actions) api.dispatch(action);
 		} else {
 			api.dispatch({ type: "setData", data });
@@ -302,6 +404,9 @@ function dispatchRemoteIR(
 		ctx.log("error", "plugin-collab-yjs: remote update dispatch failed.", {
 			error,
 		});
+	} finally {
+		telemetry.recordTiming?.("dispatch", nowMs() - dispatchStart);
+		remoteGuard.end(token);
 	}
 }
 
@@ -518,6 +623,10 @@ function consumePendingRemoteData(
 	data: unknown,
 	pendingRemoteData: Map<string, PendingRemoteEntry>,
 ): boolean {
+	// M3 — never stable-stringify the whole Puck tree when there is
+	// nothing to match against (belt-and-suspenders with the size
+	// guard at the onDataChange call site).
+	if (pendingRemoteData.size === 0) return false;
 	sweepPendingRemoteData(pendingRemoteData, Date.now());
 	const key = stableStringify(data);
 	const entry = pendingRemoteData.get(key);
