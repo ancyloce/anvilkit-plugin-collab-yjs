@@ -8,6 +8,8 @@ import * as Y from "yjs";
 
 import type { ConflictModule } from "./conflicts.js";
 import { decodeIR, encodeIR, hashIR } from "./encode.js";
+import type { LiveIRState } from "./live-ir.js";
+import { nowMs } from "./metrics.js";
 import {
 	LAST_PEER_KEY,
 	LEGACY_SNAPSHOT_INDEX_KEY,
@@ -32,9 +34,22 @@ export interface SnapshotsModuleOptions {
 	readonly localPeer: PeerInfo;
 	readonly metrics: MetricsState;
 	readonly conflicts: ConflictModule;
+	readonly liveIR: LiveIRState;
 	readonly getCurrentStatus: () => ConnectionStatus;
 	readonly computeDelta: boolean;
 }
+
+/**
+ * Native-tree mode no longer mirrors the whole document into the legacy
+ * `PAGE_IR_KEY` blob on every edit (H3) — that O(document) write is
+ * what made keystroke-level saves non-incremental. The blob is instead
+ * refreshed at most once per this interval (a "checkpoint") plus on the
+ * first save and on `forceResync`, so cold-join readers, the
+ * degraded-decode fallback, and any legacy-shaped reader stay current
+ * within a bounded staleness. The native tree itself is updated
+ * incrementally every save and is the real source of truth.
+ */
+const BLOB_CHECKPOINT_MS = 5000;
 
 export interface SnapshotsModule {
 	save(ir: PageIR, meta: Partial<Omit<SnapshotMeta, "id" | "savedAt">>): string;
@@ -75,11 +90,13 @@ export function createSnapshots(
 		localPeer,
 		metrics,
 		conflicts,
+		liveIR,
 		getCurrentStatus,
 		computeDelta,
 	} = options;
 	const subscribeListeners = new Set<(ir: PageIR, peer?: PeerInfo) => void>();
 	let lastLocalSavedAt: number | undefined;
+	let lastBlobCheckpointAt: number | undefined;
 	let queuedEdits = 0;
 
 	function readCurrentIR(): PageIR | undefined {
@@ -114,7 +131,10 @@ export function createSnapshots(
 
 	return {
 		save(ir, meta): string {
+			const encodeStart = nowMs();
 			const encoded = encodeIR(ir);
+			const pageIRHash = meta.pageIRHash ?? hashIR(encoded);
+			metrics.recordTiming("saveEncode", nowMs() - encodeStart);
 			// L2 — compute the structural diff against the previously
 			// saved IR (or against the empty document for the first
 			// save). Captured BEFORE conflicts.noteLocalSave() advances
@@ -132,21 +152,39 @@ export function createSnapshots(
 				id: metrics.createSnapshotId(),
 				label: meta.label,
 				savedAt: new Date().toISOString(),
-				pageIRHash: meta.pageIRHash ?? hashIR(encoded),
+				pageIRHash,
 				...(delta !== undefined ? { delta } : {}),
 			};
+			const now = Date.now();
+			// H3 — in native-tree mode the tree is the source of truth
+			// and is updated incrementally every save. The legacy blob
+			// is only refreshed on the first save, on a throttled
+			// checkpoint cadence, or never (it stays a snapshot-only
+			// concern). In legacy mode the blob IS the live state, so it
+			// is written every save exactly as before.
+			const writeBlob =
+				!treeRoot ||
+				lastBlobCheckpointAt === undefined ||
+				now - lastBlobCheckpointAt >= BLOB_CHECKPOINT_MS;
 			doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
 				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
 				if (treeRoot) {
+					const applyStart = nowMs();
 					applyIRToNativeTree(treeRoot, ir, conflicts.getLastLocalIR());
+					metrics.recordTiming("nativeApply", nowMs() - applyStart);
 				}
-				// PAGE_IR_KEY is still maintained for legacy fallback,
-				// snapshot hashing, and conflict-event dispatch even when
-				// the native tree is the source of truth.
-				map.set(PAGE_IR_KEY, encoded);
+				if (writeBlob) map.set(PAGE_IR_KEY, encoded);
+				// LAST_PEER_KEY is written every save (cheap, single
+				// peer JSON) so remote observers can attribute the
+				// authoring peer even when the blob is not refreshed.
 				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
 			}, localPeer);
+			if (writeBlob) lastBlobCheckpointAt = now;
+			// Keep the in-memory live view exactly in sync with what was
+			// just written so remote observers never reconstruct the
+			// whole tree just to learn current state (H3).
+			if (treeRoot) liveIR.setLocal(ir);
 			conflicts.noteLocalSave(ir);
 			lastLocalSavedAt = Date.now();
 			metrics.incSaveCount();
@@ -193,11 +231,18 @@ export function createSnapshots(
 			const restored = decodeIR(irRaw);
 			doc.transact(() => {
 				if (treeRoot) {
+					const applyStart = nowMs();
 					applyIRToNativeTree(treeRoot, restored, conflicts.getLastLocalIR());
+					metrics.recordTiming("nativeApply", nowMs() - applyStart);
 				}
+				// forceResync is an explicit authoritative re-emit —
+				// always refresh the blob and reset the checkpoint clock
+				// so cold/legacy readers immediately converge.
 				map.set(PAGE_IR_KEY, irRaw);
 				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
 			}, localPeer);
+			lastBlobCheckpointAt = Date.now();
+			if (treeRoot) liveIR.setLocal(restored);
 			conflicts.setLastLocalIR(restored);
 			lastLocalSavedAt = Date.now();
 			conflicts.closeWindow();
