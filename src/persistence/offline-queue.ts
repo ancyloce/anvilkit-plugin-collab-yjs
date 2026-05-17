@@ -1,4 +1,16 @@
+import * as Y from "yjs";
+
 import type { StorageBackend } from "./storage-backend.js";
+
+/**
+ * Compact the durable queue once this many raw updates have been
+ * appended since the last compaction (M6). A long offline session
+ * otherwise accumulates one row per keystroke-level update; reconnect
+ * then replays a huge un-compacted sequence and stalls. Merging with
+ * `Y.mergeUpdatesV2` collapses the backlog to a single equivalent
+ * update, bounding both replay length and stored bytes.
+ */
+const DEFAULT_COMPACT_EVERY = 200;
 
 export interface OfflineQueue {
 	append(update: Uint8Array): void;
@@ -24,6 +36,11 @@ export interface OfflineQueueOptions {
 	 * pass-through immediately.
 	 */
 	readonly ready?: Promise<unknown>;
+	/**
+	 * Compact the durable queue after this many appends (M6). Defaults
+	 * to 200. Set `Infinity` to disable compaction.
+	 */
+	readonly compactEvery?: number;
 }
 
 /**
@@ -41,6 +58,35 @@ export interface OfflineQueueOptions {
 export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 	const pendingAppends: Uint8Array[] = [];
 	let ready = input.ready === undefined;
+	const compactEvery = input.compactEvery ?? DEFAULT_COMPACT_EVERY;
+	let appendsSinceCompaction = 0;
+	let compacting = false;
+	let destroyed = false;
+
+	async function compact(): Promise<void> {
+		if (compacting || destroyed || !Number.isFinite(compactEvery)) return;
+		compacting = true;
+		try {
+			const backend = input.getBackend();
+			// drain() atomically clears the store; updates appended
+			// concurrently land as fresh rows. Yjs updates are
+			// commutative under applyUpdateV2, so re-appending the merged
+			// blob alongside them stays correct — this only bounds count.
+			const all = await backend.drain();
+			if (all.length <= 1) {
+				if (all[0]) await backend.append(all[0]);
+				return;
+			}
+			const merged = Y.mergeUpdatesV2(all.map((u) => u));
+			await backend.append(merged);
+		} catch {
+			// Best-effort: a fault downgrades the backend to NullBackend
+			// internally; losing the compaction pass is non-fatal.
+		} finally {
+			compacting = false;
+		}
+	}
+
 	if (input.ready) {
 		void input.ready.then(() => {
 			ready = true;
@@ -60,6 +106,11 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 			// downgrades to NullBackend internally so we never throw out
 			// of the Y.Doc observer chain.
 			void input.getBackend().append(update);
+			appendsSinceCompaction += 1;
+			if (appendsSinceCompaction >= compactEvery) {
+				appendsSinceCompaction = 0;
+				void compact();
+			}
 		},
 		drain(): Promise<readonly Uint8Array[]> {
 			return input.getBackend().drain();
@@ -71,6 +122,7 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 			return pendingAppends.length + input.getBackend().size();
 		},
 		destroy(): void {
+			destroyed = true;
 			input.getBackend().destroy();
 			pendingAppends.length = 0;
 		},
