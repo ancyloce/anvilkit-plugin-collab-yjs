@@ -21,6 +21,7 @@ import type {
 	CollabPolicy,
 	CreateCollabPluginOptions,
 	PolicyViolation,
+	RemoteChange,
 	ValidationFailure,
 } from "./types.js";
 
@@ -154,7 +155,13 @@ export function createCollabDataPlugin(
 						// call stack; it enqueues latest-wins and the
 						// scheduler flushes ≤ once per animation frame.
 						scheduler = createInboundScheduler({
-							flush: (_room, latestIR, latestPeer, queueDelayMs) => {
+							flush: (
+								_room,
+								latestIR,
+								latestPeer,
+								queueDelayMs,
+								latestChanged,
+							) => {
 								telemetry.recordTiming?.("inboundQueueDelay", queueDelayMs);
 								dispatchRemoteIR(
 									initCtx,
@@ -165,15 +172,18 @@ export function createCollabDataPlugin(
 									remoteGuard,
 									telemetry,
 									latestPeer,
+									latestChanged,
 								);
 							},
 							onCoalesced: (n) => telemetry.incInboundCoalesced?.(n),
 							scheduler: options.inboundScheduler,
 							budgetMs: options.inboundBudgetMs,
 						});
-						unsubscribe = options.adapter.subscribe((ir, peer) => {
-							scheduler?.enqueue(ROOM_KEY, ir, peer);
-						});
+						unsubscribe = options.adapter.subscribe(
+							(ir, peer, changed?: RemoteChange) => {
+								scheduler?.enqueue(ROOM_KEY, ir, peer, changed);
+							},
+						);
 						// Hydration deliberately bypasses the scheduler: it
 						// is a one-shot initial paint that must stay
 						// synchronous with onInit so hosts/tests observe
@@ -306,6 +316,7 @@ function dispatchRemoteIR(
 	remoteGuard: RemoteDispatchGuard,
 	telemetry: AdapterTelemetry,
 	peer?: PeerInfo,
+	changed?: RemoteChange,
 ): void {
 	const validated = runValidation(ctx, ir, options);
 	if (validated === null) return;
@@ -328,15 +339,6 @@ function dispatchRemoteIR(
 	const convStart = nowMs();
 	const data = irToPuckData(validated);
 	telemetry.recordTiming?.("conversion", nowMs() - convStart);
-	const key = stableStringify(data);
-	// Skip the dispatch when the resulting Puck data is structurally
-	// identical to what Puck already holds. This eliminates two
-	// classes of spurious re-render that would otherwise reset
-	// focused controlled inputs (cursor jumps in <textarea>):
-	//   - server echo of the local peer's own writes coming back
-	//     through the relay
-	//   - CRDT merges where the remote update did not change anything
-	//     the host actually renders (e.g. internal metadata churn)
 	// Reading current data via `ctx.getData()` instead of
 	// `getPuckApi().appState` keeps this path off Puck's API when the
 	// plugin context is configured without a live `<Puck>` mount
@@ -350,9 +352,31 @@ function dispatchRemoteIR(
 		// remote update silently.
 		currentData = undefined;
 	}
-	const currentKey =
-		currentData === undefined ? undefined : stableStringify(currentData);
-	if (currentKey !== undefined && currentKey === key) return;
+	// T2 — drive the no-op skip from the dispatch plan instead of a
+	// second full-document `stableStringify(currentData)` compared to
+	// `stableStringify(data)`. A non-null plan with zero actions means
+	// the structure is stable and every touched node is byte-identical
+	// to what Puck already holds — i.e. a true no-op: a server echo of
+	// our own write, or a CRDT merge that changed nothing the host
+	// renders. That used to require TWO O(document) stringifies on
+	// EVERY inbound flush (cursor-jump / spurious-re-render guard);
+	// with the adapter's changed-id set the planner is O(changed), so
+	// this removes one of the two remaining Tier-2 full-document
+	// stringifies from the hot path. (`actions === null` —
+	// structural / no-current-data / root- or zone-shape change — is
+	// NOT a no-op and still proceeds to dispatch, exactly as before.)
+	const changedIds =
+		changed !== undefined && !changed.structural ? changed.ids : undefined;
+	const planResult = planReplaceActions(currentData, data, changedIds);
+	if (planResult.actions !== null && planResult.actions.length === 0) return;
+	// The remaining `key` is the pendingRemoteData echo-match key. Its
+	// contract is shared with `onDataChange`'s
+	// `consumePendingRemoteData`, which only sees the full
+	// post-dispatch `data` (no changed-id context), so it must stay a
+	// full-document identity. Narrowing it safely needs a coordinated
+	// onDataChange-side redesign of echo suppression — a separate,
+	// higher-risk change deliberately left out of scope here.
+	const key = stableStringify(data);
 	const now = Date.now();
 	sweepPendingRemoteData(pendingRemoteData, now);
 	const existing = pendingRemoteData.get(key);
@@ -371,23 +395,23 @@ function dispatchRemoteIR(
 	const token = remoteGuard.begin();
 	const dispatchStart = nowMs();
 	try {
-		// Prefer atomic `replace` per changed item over the heavy
-		// `setData` action when the structural shape (`content`
-		// length, item ids, zone keyset) is unchanged. `replace` only
-		// re-renders the replaced item; sibling components keep their
-		// React identity, which preserves a focused peer's textarea
-		// caret position when a remote peer edits a different node —
-		// or a different prop of the same node, since the focused
-		// field's `useLocalValue` short-circuits on `isFocused`.
-		// Falls through to `setData` for structural changes
-		// (insert/remove/reorder, zone topology shifts) where atomic
-		// replacement isn't enough, or when the replace count crosses
-		// REPLACE_BATCH_THRESHOLD (P1 — one setData beats N dispatches).
-		const planResult = planReplaceActions(currentData, data);
+		// `planResult` (and its O(changed) `changedIds` narrowing) was
+		// computed above so it could also drive the no-op skip. Prefer
+		// atomic `replace` per changed item over the heavy `setData`:
+		// `replace` only re-renders the replaced item; siblings keep
+		// React identity, preserving a focused peer's textarea caret
+		// when a remote peer edits a different node — or a different
+		// prop of the same node (the focused field's `useLocalValue`
+		// short-circuits on `isFocused`). Falls through to `setData`
+		// for structural changes (insert/remove/reorder, zone topology)
+		// or when the replace count crosses the batch threshold
+		// (P1 — one setData beats N dispatches).
 		const api = ctx.getPuckApi();
+		const replaceBatchThreshold =
+			options.replaceBatchThreshold ?? REPLACE_BATCH_THRESHOLD;
 		if (
 			planResult.actions !== null &&
-			planResult.actions.length <= REPLACE_BATCH_THRESHOLD
+			planResult.actions.length <= replaceBatchThreshold
 		) {
 			for (const action of planResult.actions) api.dispatch(action);
 		} else {
@@ -453,6 +477,7 @@ interface PlanResult {
 function planReplaceActions(
 	before: PuckData | undefined,
 	after: PuckData,
+	changedIds?: ReadonlySet<string>,
 ): PlanResult {
 	if (!before) return { actions: null, fallbackReason: "no-current-data" };
 	// Compare just the root component's props rather than the raw
@@ -478,6 +503,7 @@ function planReplaceActions(
 		ROOT_DROPPABLE_ID,
 		before.content,
 		after.content,
+		changedIds,
 	);
 	if (contentDiff === null) {
 		return { actions: null, fallbackReason: "content-structure-changed" };
@@ -488,6 +514,7 @@ function planReplaceActions(
 			zoneKey,
 			before.zones?.[zoneKey],
 			after.zones?.[zoneKey],
+			changedIds,
 		);
 		if (zoneDiff === null) {
 			return {
@@ -504,6 +531,7 @@ function diffZoneContent(
 	zoneKey: string,
 	before: ReadonlyArray<PuckContentItem> | undefined,
 	after: ReadonlyArray<PuckContentItem> | undefined,
+	changedIds?: ReadonlySet<string>,
 ): readonly ReplaceAction[] | null {
 	const a = before ?? [];
 	const b = after ?? [];
@@ -515,6 +543,17 @@ function diffZoneContent(
 		if (!beforeItem || !afterItem) return null;
 		if (beforeItem.props.id !== afterItem.props.id) return null;
 		if (beforeItem.type !== afterItem.type) return null;
+		// Fast path: the adapter already told us which node ids a
+		// non-structural remote edit touched. An item whose id is not
+		// in that set is guaranteed unchanged, so skip the expensive
+		// per-item stable-stringify equality. The structural guards
+		// above still run for every index, so a mis-flagged reorder
+		// (id-at-index shift) still falls back to `setData` — the set
+		// only narrows *which props we compare*, never *whether we
+		// trust the structure*.
+		if (changedIds !== undefined && !changedIds.has(afterItem.props.id)) {
+			continue;
+		}
 		if (isShallowJsonEqual(beforeItem, afterItem)) continue;
 		actions.push({
 			type: "replace",
