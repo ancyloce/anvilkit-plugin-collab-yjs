@@ -18,6 +18,7 @@ import {
 	applyIRToNativeTree,
 	deriveChangedNodeIds,
 	NATIVE_VERSION_KEY,
+	readNativeTree,
 } from "./native-tree.js";
 import { createPersistence } from "./persistence/index.js";
 import { validatePeerInfo } from "./presence-schema.js";
@@ -142,6 +143,40 @@ export function createYjsAdapter(
 		metrics,
 		options.awarenessRateLimit,
 	);
+
+	// Seed the conflict baseline from the already-loaded document.
+	// `conflicts.noteLocalSave()` only anchors `baselineIR` from
+	// `lastLocalIR`, which is otherwise undefined until the first remote
+	// Yjs event or snapshot restore. The plugin-level hydrate path
+	// (`dispatchRemoteIR`) does NOT touch the conflict module, so a
+	// fresh session with existing document content but no remote edits
+	// yet would take `propsConflict`'s divergence-as-conflict fallback
+	// on the user's first save and mis-report disjoint concurrent edits
+	// as overlaps. Anchoring `lastLocalIR` to the loaded state here puts
+	// the first save on the three-way baseline path. A genuinely empty
+	// doc reads back `undefined` and keeps the legacy first-save
+	// semantics (the divergence fallback) untouched.
+	{
+		let loadedIR: PageIR | undefined;
+		if (treeRoot && treeRoot.has(NATIVE_VERSION_KEY)) {
+			loadedIR =
+				readNativeTree(treeRoot, {
+					onGuardTrip: () => metrics.setDegraded(true),
+				}) ?? undefined;
+		} else {
+			const legacyRaw = map.get(PAGE_IR_KEY);
+			if (typeof legacyRaw === "string") {
+				try {
+					loadedIR = decodeIR(legacyRaw);
+				} catch {
+					// Unparseable blob — leave the baseline unseeded.
+				}
+			}
+		}
+		if (loadedIR && conflicts.getLastLocalIR() === undefined) {
+			conflicts.setLastLocalIR(loadedIR);
+		}
+	}
 
 	function dispatchRemote(
 		remoteIR: PageIR,

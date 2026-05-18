@@ -8,6 +8,7 @@ import type {
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
+import packageJson from "../package.json";
 import {
 	createInboundScheduler,
 	type InboundScheduler,
@@ -69,6 +70,21 @@ interface PendingRemoteEntry {
 	addedAt: number;
 }
 
+/**
+ * Dirty-field shield state. `pending` is the latest local intent IR
+ * (set on every outbound `onDataChange`, including the keystroke still
+ * inside the debounce window). `lastDispatched` is the last *converged*
+ * remote/hydrated IR Puck was reconciled toward — the baseline used to
+ * decide which props the local user actually edited (and therefore must
+ * not be reverted by an incoming remote merge that still carries the
+ * pre-edit saved value).
+ */
+interface LocalShadow {
+	pending?: PageIR;
+	pendingAt: number;
+	lastDispatched?: PageIR;
+}
+
 const PENDING_REMOTE_MAX_AGE_MS = 60_000;
 
 function sweepPendingRemoteData(
@@ -83,9 +99,10 @@ function sweepPendingRemoteData(
 const META = {
 	id: "anvilkit-plugin-collab-yjs",
 	name: "Collab (Yjs)",
-	// Keep in lockstep with package.json — enforced by the metadata
-	// drift guard in src/__tests__/plugin.metadata-drift.test.ts (M1).
-	version: "0.10.0-rc.1",
+	// Derived from package.json so a Changesets bump can never drift the
+	// runtime metadata; the metadata-drift guard in
+	// src/__tests__/plugin.metadata-drift.test.ts (M1) catches regressions.
+	version: packageJson.version,
 	coreVersion: "^0.1.0-alpha",
 	description:
 		"GA-candidate realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree for per-node merge, a transport-agnostic connection-state contract, and force-resync.",
@@ -122,6 +139,7 @@ export function createCollabDataPlugin(
 	let unsubscribe: (() => void) | undefined;
 	let scheduler: InboundScheduler | undefined;
 	const pendingRemoteData = new Map<string, PendingRemoteEntry>();
+	const localShadow: LocalShadow = { pendingAt: 0 };
 	const ephemeralPeer = options.localPeer ?? createEphemeralPeer();
 	const usedEphemeralPeer = options.localPeer === undefined;
 	// H2 — one re-entrant guard per plugin instance, threaded into
@@ -167,6 +185,7 @@ export function createCollabDataPlugin(
 									initCtx,
 									latestIR,
 									pendingRemoteData,
+									localShadow,
 									options,
 									ephemeralPeer,
 									remoteGuard,
@@ -192,6 +211,7 @@ export function createCollabDataPlugin(
 							initCtx,
 							options,
 							pendingRemoteData,
+							localShadow,
 							ephemeralPeer,
 							remoteGuard,
 							telemetry,
@@ -234,6 +254,16 @@ export function createCollabDataPlugin(
 							return;
 						}
 						try {
+							// Dirty-field shield: record the local user's latest
+							// intent (including a keystroke still inside the
+							// adapter's debounce window) so an interleaving
+							// remote merge does not revert the focused field
+							// back to its last *saved* value. Remote echoes are
+							// already short-circuited above (H2 grace window /
+							// pendingRemoteData), so this only captures genuine
+							// local edits.
+							localShadow.pending = ir;
+							localShadow.pendingAt = Date.now();
 							const result = options.adapter.save(ir, {});
 							Promise.resolve(result).catch((error: unknown) => {
 								changeCtx.log(
@@ -282,6 +312,7 @@ async function hydrateLatestSnapshot(
 	ctx: StudioPluginContext,
 	options: CreateCollabPluginOptions,
 	pendingRemoteData: Map<string, PendingRemoteEntry>,
+	localShadow: LocalShadow,
 	localPeer: PeerInfo,
 	remoteGuard: RemoteDispatchGuard,
 	telemetry: AdapterTelemetry,
@@ -295,6 +326,7 @@ async function hydrateLatestSnapshot(
 			ctx,
 			ir,
 			pendingRemoteData,
+			localShadow,
 			options,
 			localPeer,
 			remoteGuard,
@@ -311,6 +343,7 @@ function dispatchRemoteIR(
 	ctx: StudioPluginContext,
 	ir: PageIR,
 	pendingRemoteData: Map<string, PendingRemoteEntry>,
+	localShadow: LocalShadow,
 	options: CreateCollabPluginOptions,
 	localPeer: PeerInfo,
 	remoteGuard: RemoteDispatchGuard,
@@ -336,8 +369,17 @@ function dispatchRemoteIR(
 		options.onPolicyViolation?.(violation);
 		return;
 	}
+	// Dirty-field shield: re-apply the local user's not-yet-converged
+	// edits on top of the merged remote IR so a `replace`/`setData`
+	// never reverts a focused field to its last *saved* value (the
+	// "Save changes!" ↔ "Save changes" flicker / caret jump). Computed
+	// against the PREVIOUS converged baseline, so remote edits to props
+	// the local user did not touch still pass through. `validated`
+	// becomes the new baseline only AFTER the shield reads the old one.
+	const shielded = applyLocalShield(validated, localShadow, Date.now());
+	localShadow.lastDispatched = validated;
 	const convStart = nowMs();
-	const data = irToPuckData(validated);
+	const data = irToPuckData(shielded);
 	telemetry.recordTiming?.("conversion", nowMs() - convStart);
 	// Reading current data via `ctx.getData()` instead of
 	// `getPuckApi().appState` keeps this path off Puck's API when the
@@ -432,6 +474,81 @@ function dispatchRemoteIR(
 		telemetry.recordTiming?.("dispatch", nowMs() - dispatchStart);
 		remoteGuard.end(token);
 	}
+}
+
+function indexNodesById(ir: PageIR): Map<string, PageIRNode> {
+	const out = new Map<string, PageIRNode>();
+	walkNodes(ir.root, (node) => {
+		out.set(node.id, node);
+	});
+	return out;
+}
+
+/**
+ * Dirty-field shield. Returns `remote` with every prop the local user
+ * has edited away from the previous converged baseline
+ * (`shadow.lastDispatched`) — and which the merged remote IR does not
+ * already carry — overwritten by the local (not-yet-saved) value.
+ *
+ * Three-way per prop, so it shields ONLY genuine local edits: a prop
+ * the remote peer changed but the local user did not touch
+ * (`pending === baseline`) passes through as the remote value and still
+ * converges. A node absent from the baseline (local insert / structural
+ * change) is left to the existing `setData` fallback. The pending
+ * shadow is ignored once older than `PENDING_REMOTE_MAX_AGE_MS` so a
+ * stuck buffer can never permanently mask a real remote change.
+ */
+function applyLocalShield(
+	remote: PageIR,
+	shadow: LocalShadow,
+	now: number,
+): PageIR {
+	const pending = shadow.pending;
+	const baseline = shadow.lastDispatched;
+	if (!pending || !baseline) return remote;
+	if (now - shadow.pendingAt > PENDING_REMOTE_MAX_AGE_MS) return remote;
+	const pendingNodes = indexNodesById(pending);
+	const baselineNodes = indexNodesById(baseline);
+	let mutated = false;
+	const rewrite = (node: PageIRNode): PageIRNode => {
+		const p = pendingNodes.get(node.id);
+		const b = baselineNodes.get(node.id);
+		let nextProps = node.props;
+		if (p && b) {
+			const pProps = p.props ?? {};
+			const bProps = b.props ?? {};
+			const rProps = node.props ?? {};
+			for (const key of Object.keys(pProps)) {
+				const localVal = stableStringify(pProps[key]);
+				const baseVal = stableStringify(bProps[key]);
+				const remoteVal = stableStringify(rProps[key]);
+				// Local edited this prop (differs from converged baseline)
+				// and the merged remote value is something else → keep the
+				// local unsaved value so the focused field never reverts.
+				if (localVal !== baseVal && localVal !== remoteVal) {
+					if (nextProps === node.props) {
+						nextProps = { ...(node.props ?? {}) };
+					}
+					(nextProps as Record<string, unknown>)[key] = pProps[key];
+					mutated = true;
+				}
+			}
+		}
+		let children = node.children;
+		if (node.children) {
+			const rewritten = node.children.map(rewrite);
+			const childChanged = rewritten.some((c, i) => c !== node.children?.[i]);
+			if (childChanged) children = rewritten;
+		}
+		if (nextProps === node.props && children === node.children) return node;
+		return {
+			...node,
+			props: nextProps,
+			...(children ? { children } : {}),
+		};
+	};
+	const root = rewrite(remote.root);
+	return mutated ? { ...remote, root } : remote;
 }
 
 /**
