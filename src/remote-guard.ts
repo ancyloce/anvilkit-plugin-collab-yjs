@@ -41,6 +41,21 @@ export interface RemoteDispatchGuard {
 	 * instant after dispatch returns is never suppressed here.
 	 */
 	withinGraceWindow(now: number): boolean;
+	/**
+	 * Record that an `onDataChange` was suppressed *while a dispatch
+	 * was active*. Lets `dispatchRemoteIR` learn, in its `finally`,
+	 * whether the host fired its echo synchronously (the common case —
+	 * Puck does) so the expensive exact-data fallback can be skipped
+	 * entirely on the hot path. No-op when no dispatch is active.
+	 */
+	noteSuppressed(): void;
+	/**
+	 * True iff at least one `onDataChange` was suppressed during the
+	 * most recently closed dispatch region. A synchronous host always
+	 * produces this; an async/pathological host does not, and only
+	 * then is the exact-data `pendingRemoteData` fallback needed.
+	 */
+	consumedSyncEcho(): boolean;
 }
 
 export interface RemoteDispatchGuardOptions {
@@ -65,12 +80,17 @@ export function createRemoteDispatchGuard(
 	let nextToken = 1;
 	const openTokens = new Set<number>();
 	let closedAt: number | undefined;
+	// Suppressions observed since the outermost `begin()`; snapshotted
+	// into `lastDispatchSyncSuppress` when the region closes.
+	let syncSuppressInFlight = 0;
+	let lastDispatchSyncSuppress = 0;
 
 	return {
 		begin(): number {
 			const token = nextToken;
 			nextToken += 1;
 			openTokens.add(token);
+			if (depth === 0) syncSuppressInFlight = 0;
 			depth += 1;
 			return token;
 		},
@@ -80,7 +100,14 @@ export function createRemoteDispatchGuard(
 			if (depth <= 0) {
 				depth = 0;
 				closedAt = Date.now();
+				lastDispatchSyncSuppress = syncSuppressInFlight;
 			}
+		},
+		noteSuppressed(): void {
+			if (depth > 0) syncSuppressInFlight += 1;
+		},
+		consumedSyncEcho(): boolean {
+			return lastDispatchSyncSuppress > 0;
 		},
 		isActive(): boolean {
 			return depth > 0;
