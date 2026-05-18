@@ -48,6 +48,15 @@ export interface LiveIRState {
 	 */
 	setLocal(ir: PageIR): void;
 	/**
+	 * I1/§3.1 — incremental sibling of {@link setLocal}. Updates only
+	 * the `changed` node entries (+ root assets/metadata/id) instead
+	 * of clearing and re-walking the whole tree. Caller guarantees a
+	 * non-structural save (same id-set, unchanged `childIds`), so the
+	 * materialized result is identical to `setLocal(ir)`. Falls back
+	 * to a full seed if the cache was never seeded.
+	 */
+	setLocalChanged(ir: PageIR, changed: ReadonlyMap<string, PageIRNode>): void;
+	/**
 	 * Seed/replace the cache from a decoded legacy `PAGE_IR_KEY` blob
 	 * (old/legacy-mode peers, hydration, force-resync).
 	 */
@@ -143,6 +152,22 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 	return {
 		get: materialize,
 		setLocal: seedFromIR,
+		setLocalChanged(ir, changed): void {
+			if (!seeded) {
+				seedFromIR(ir);
+				return;
+			}
+			rootId = ir.root.id;
+			assets = ir.assets;
+			metadata = ir.metadata;
+			for (const [id, node] of changed) {
+				const { children, ...own } = node;
+				cache.set(id, {
+					node: { ...own },
+					childIds: children ? children.map((c) => c.id) : [],
+				});
+			}
+		},
 		applyRemoteFullBlob: seedFromIR,
 		applyRemoteChangedNodes(treeRoot, ids, structural): PageIR | undefined {
 			if (structural || !seeded) {
