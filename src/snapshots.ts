@@ -25,7 +25,11 @@ import {
 	readNativeTree,
 } from "./native-tree.js";
 import { validatePeerInfo } from "./presence-schema.js";
-import type { ConnectionStatus } from "./types.js";
+import type {
+	ConnectionStatus,
+	RemoteAwareSubscriber,
+	RemoteChange,
+} from "./types.js";
 
 export interface SnapshotsModuleOptions {
 	readonly doc: Y.Doc;
@@ -75,8 +79,8 @@ export interface SnapshotsModule {
 	getLastLocalSavedAt(): number | undefined;
 	getQueuedEdits(): number;
 	resetQueuedEdits(): void;
-	emitToSubscribers(ir: PageIR, peer?: PeerInfo): void;
-	subscribe(onUpdate: (ir: PageIR, peer?: PeerInfo) => void): () => void;
+	emitToSubscribers(ir: PageIR, peer?: PeerInfo, changed?: RemoteChange): void;
+	subscribe(onUpdate: RemoteAwareSubscriber): () => void;
 }
 
 /**
@@ -108,7 +112,7 @@ export function createSnapshots(
 		computeDelta,
 		maxSnapshots,
 	} = options;
-	const subscribeListeners = new Set<(ir: PageIR, peer?: PeerInfo) => void>();
+	const subscribeListeners = new Set<RemoteAwareSubscriber>();
 	let lastLocalSavedAt: number | undefined;
 	let lastBlobCheckpointAt: number | undefined;
 	let queuedEdits = 0;
@@ -133,10 +137,14 @@ export function createSnapshots(
 		}
 	}
 
-	function emitToSubscribers(ir: PageIR, peer?: PeerInfo): void {
+	function emitToSubscribers(
+		ir: PageIR,
+		peer?: PeerInfo,
+		changed?: RemoteChange,
+	): void {
 		for (const listener of subscribeListeners) {
 			try {
-				listener(ir, peer);
+				listener(ir, peer, changed);
 			} catch {
 				metrics.incDispatchFailure();
 			}
