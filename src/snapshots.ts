@@ -20,7 +20,9 @@ import {
 } from "./keys.js";
 import type { MetricsState } from "./metrics.js";
 import {
+	applyChangedNodesToNativeTree,
 	applyIRToNativeTree,
+	diffIRNodesForLocalSave,
 	NATIVE_VERSION_KEY,
 	readNativeTree,
 } from "./native-tree.js";
@@ -126,7 +128,9 @@ export function createSnapshots(
 			// blob and flag the adapter as degraded so hosts can surface
 			// the regression. An empty tree (no version key set yet) is
 			// the normal pre-hydration state and is NOT flagged.
-			if (treeRoot.has(NATIVE_VERSION_KEY)) metrics.setDegraded(true);
+			if (treeRoot.has(NATIVE_VERSION_KEY)) {
+				metrics.setDegraded(true, "decode-failure");
+			}
 		}
 		const raw = map.get(PAGE_IR_KEY);
 		if (typeof raw !== "string") return undefined;
@@ -188,6 +192,16 @@ export function createSnapshots(
 				!treeRoot ||
 				lastBlobCheckpointAt === undefined ||
 				now - lastBlobCheckpointAt >= BLOB_CHECKPOINT_MS;
+			// I1/§3.1 — classify this save BEFORE the transaction (pure,
+			// no Y.Doc ops). A non-structural save touches only a few
+			// nodes; writing just those is byte-identical to the full
+			// `applyIRToNativeTree` (unchanged nodes' `writeNode` is a
+			// no-op) but O(changed) instead of O(document). Structural
+			// saves (first save, topology change) keep the full apply.
+			const prevLocalIR = conflicts.getLastLocalIR();
+			const localDiff = treeRoot
+				? diffIRNodesForLocalSave(prevLocalIR, ir)
+				: undefined;
 			doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
 				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
@@ -213,7 +227,17 @@ export function createSnapshots(
 				}
 				if (treeRoot) {
 					const applyStart = nowMs();
-					applyIRToNativeTree(treeRoot, ir, conflicts.getLastLocalIR());
+					if (localDiff !== undefined && !localDiff.structural) {
+						applyChangedNodesToNativeTree(
+							treeRoot,
+							ir,
+							prevLocalIR,
+							localDiff.changed,
+							localDiff.baseline,
+						);
+					} else {
+						applyIRToNativeTree(treeRoot, ir, prevLocalIR);
+					}
 					metrics.recordTiming("nativeApply", nowMs() - applyStart);
 				}
 				if (writeBlob) map.set(PAGE_IR_KEY, encoded);
@@ -226,7 +250,13 @@ export function createSnapshots(
 			// Keep the in-memory live view exactly in sync with what was
 			// just written so remote observers never reconstruct the
 			// whole tree just to learn current state (H3).
-			if (treeRoot) liveIR.setLocal(ir);
+			if (treeRoot) {
+				if (localDiff !== undefined && !localDiff.structural) {
+					liveIR.setLocalChanged(ir, localDiff.changed);
+				} else {
+					liveIR.setLocal(ir);
+				}
+			}
 			conflicts.noteLocalSave(ir);
 			lastLocalSavedAt = Date.now();
 			metrics.incSaveCount();
