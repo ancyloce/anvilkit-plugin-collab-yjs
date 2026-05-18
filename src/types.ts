@@ -371,6 +371,38 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
  * (possibly transformed) `PageIR` allows it to proceed. Defense-in-depth
  * against hostile or buggy peers — every transport is treated as untrusted.
  */
+/**
+ * Set of node ids touched by a single inbound remote update, plus a
+ * `structural` flag set when the change altered document shape
+ * (root/version/assets/metadata, node add/remove, childIds reorder)
+ * rather than only node props.
+ *
+ * Computed once by the adapter's `deriveChangedNodeIds` and threaded
+ * through `subscribe` → scheduler → `dispatchRemoteIR` so the plugin
+ * can apply a non-structural edit in O(changed) instead of re-deriving
+ * it in O(document). Always optional: when absent (legacy adapters,
+ * JSON-blob mode, hydration) the plugin keeps its existing
+ * O(document) full-diff path.
+ */
+export interface RemoteChange {
+	readonly ids: ReadonlySet<string>;
+	readonly structural: boolean;
+}
+
+/**
+ * Callback shape the adapter invokes for every emitted IR. The optional
+ * third argument is the {@link RemoteChange} for inbound remote
+ * updates; local re-emits and hydration omit it. Structurally
+ * assignable to the upstream `SnapshotAdapter.subscribe` callback
+ * (the extra param is optional), so threading it requires no change to
+ * `@anvilkit/plugin-version-history`.
+ */
+export type RemoteAwareSubscriber = (
+	ir: PageIR,
+	peer?: PeerInfo,
+	changed?: RemoteChange,
+) => void;
+
 export type ValidateRemoteIR = (ir: PageIR) => PageIR | null;
 
 /**
@@ -467,6 +499,14 @@ export interface CreateCollabPluginOptions {
 	 * `requestAnimationFrame` is available. Default 16.
 	 */
 	readonly inboundBudgetMs?: number;
+	/**
+	 * P1 — at or below this many per-node `replace` actions the plugin
+	 * dispatches them individually (only the touched components
+	 * re-render); above it a single `setData` is cheaper than N
+	 * dispatches. Default `50` ({@link REPLACE_BATCH_THRESHOLD}). Tune
+	 * for hosts with very large bulk-edit bursts without a release.
+	 */
+	readonly replaceBatchThreshold?: number;
 }
 
 export interface CollabPluginRuntime {
