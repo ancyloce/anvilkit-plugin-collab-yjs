@@ -230,6 +230,18 @@ export interface ConflictEvent {
  * traffic (no local save in the staleness window) is excluded. The
  * window holds the last 200 samples — older samples are evicted FIFO.
  */
+/**
+ * A2 — why the adapter degraded. The three native-tree read-guard
+ * trips plus the legacy-blob decode fallback. Superset of
+ * `ReadGuardTrip` (native-tree.ts) so a guard reason flows through
+ * `setDegraded` without a lossy cast.
+ */
+export type DegradedReason =
+	| "cycle"
+	| "max-depth"
+	| "max-nodes"
+	| "decode-failure";
+
 export interface MetricsSnapshot {
 	/** Number of `save` calls invoked on the adapter since creation. */
 	readonly saveCount: number;
@@ -265,6 +277,15 @@ export interface MetricsSnapshot {
 	readonly syncLatencySamples: number;
 	/** Set when the adapter fell back to legacy `pageIR` after native-tree decode failed. */
 	readonly degraded: boolean;
+	/**
+	 * A2 — distinct reasons the adapter has ever degraded, for
+	 * production incident triage (the bare `degraded` boolean said
+	 * *that* it degraded but never *why*). `"cycle"` / `"max-depth"` /
+	 * `"max-nodes"` are native-tree read-guard trips; `"decode-failure"`
+	 * is an undecodable native tree falling back to the legacy blob.
+	 * Empty while healthy; deduplicated; insertion-ordered.
+	 */
+	readonly degradedReasons: readonly DegradedReason[];
 	/**
 	 * Number of awareness payloads that failed `validatePresenceState`
 	 * since adapter creation. A non-zero value indicates a misbehaving
