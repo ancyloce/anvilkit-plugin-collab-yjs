@@ -98,7 +98,7 @@ export function createYjsAdapter(
 	// or node-count overflow from malformed/hostile remote tree data,
 	// M4) degrades the adapter so hosts can surface the regression.
 	const liveIR = createLiveIRState({
-		onGuardTrip: () => metrics.setDegraded(true),
+		onGuardTrip: (reason) => metrics.setDegraded(true, reason),
 	});
 	const persistence = createPersistence({
 		options: options.persistence,
@@ -161,7 +161,7 @@ export function createYjsAdapter(
 		if (treeRoot && treeRoot.has(NATIVE_VERSION_KEY)) {
 			loadedIR =
 				readNativeTree(treeRoot, {
-					onGuardTrip: () => metrics.setDegraded(true),
+					onGuardTrip: (reason) => metrics.setDegraded(true, reason),
 				}) ?? undefined;
 		} else {
 			const legacyRaw = map.get(PAGE_IR_KEY);
