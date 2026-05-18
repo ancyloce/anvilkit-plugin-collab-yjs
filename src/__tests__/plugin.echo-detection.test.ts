@@ -159,6 +159,82 @@ describe("createCollabPlugin echo detection (H1)", () => {
 		expect(dispatch).not.toHaveBeenCalled();
 	});
 
+	it("shields a locally-dirty prop: a remote merge of a different prop does not revert the local unsaved value", async () => {
+		// Regression for the "Save changes!" ↔ "Save changes" flicker.
+		// While the trailing "!" is still inside the adapter's debounce
+		// window, a remote peer edits a DIFFERENT prop. The merged remote
+		// IR carries the local peer's last *saved* headline ("Save
+		// changes", no "!"). Without the dirty-field shield, the planned
+		// `replace` reverts the focused field for a frame (caret jump);
+		// with it, the local unsaved headline is preserved and the
+		// remote description still converges.
+		const makeIR = (headline: string, description: string) =>
+			createFakePageIR({
+				children: [
+					{ id: "hero-1", type: "Hero", props: { headline, description } },
+				],
+			});
+		const heroProps = (
+			action: unknown,
+		): Record<string, unknown> | undefined => {
+			const a = action as {
+				type?: string;
+				data?: {
+					props?: Record<string, unknown>;
+					content?: { props?: Record<string, unknown> }[];
+				};
+			};
+			if (a?.type === "replace") {
+				return a.data?.props?.id === "hero-1" ? a.data.props : undefined;
+			}
+			if (a?.type === "setData") {
+				return a.data?.content?.find((i) => i.props?.id === "hero-1")?.props;
+			}
+			return undefined;
+		};
+
+		const adapter = fakeAdapter();
+		const dispatch = vi.fn();
+		let currentData = irToPuckData(makeIR("Save changes", "old desc"));
+		const ctx = createFakeStudioContext({
+			getData: () => currentData,
+			getPuckApi: vi.fn(
+				() => ({ dispatch }) as unknown as PuckApi,
+			) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const harness = await registerPlugin(
+			createCollabPlugin({
+				adapter,
+				puckConfig: STUB_CONFIG,
+				localPeer: { id: "local-test" },
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		// Establish the converged baseline Puck is reconciled toward.
+		adapter.pushUpdate(makeIR("Save changes", "old desc"));
+		dispatch.mockClear();
+
+		// Local user appends "!" — captured as pending intent by
+		// onDataChange; Puck now shows the unsaved value.
+		currentData = irToPuckData(makeIR("Save changes!", "old desc"));
+		await harness.registration.hooks?.onDataChange?.(ctx, currentData);
+
+		// Remote peer edits the description only. Merged remote IR still
+		// carries the pre-edit saved headline.
+		adapter.pushUpdate(makeIR("Save changes", "new desc"));
+
+		const props = dispatch.mock.calls
+			.map((c) => heroProps(c[0]))
+			.filter((p): p is Record<string, unknown> => p !== undefined);
+		expect(props.length).toBeGreaterThan(0);
+		// Shield preserved the local unsaved headline...
+		for (const p of props) expect(p.headline).toBe("Save changes!");
+		// ...and the remote description still converged.
+		expect(props.some((p) => p.description === "new desc")).toBe(true);
+	});
+
 	it("decrements echo count per consume so a refcount stays bounded under bursts", async () => {
 		const adapter = fakeAdapter();
 		const dispatch = vi.fn();
