@@ -9,7 +9,11 @@ import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
 import packageJson from "../package.json";
-import { projectChangedNodes } from "./incremental-projection.js";
+import {
+	type LocationIndex,
+	createLocationIndex,
+	projectChangedNodes,
+} from "./incremental-projection.js";
 import {
 	createInboundScheduler,
 	type InboundScheduler,
@@ -84,6 +88,15 @@ interface LocalShadow {
 	pending?: PageIR;
 	pendingAt: number;
 	lastDispatched?: PageIR;
+	// §P2 — memoised `indexNodesById(lastDispatched)`. The converged
+	// baseline only changes when *we* dispatch, so its node index can
+	// be reused across every interleaving remote flush instead of
+	// re-walking the whole tree each time the shield runs. Keyed on the
+	// baseline IR reference so a new baseline transparently rebuilds it.
+	baselineIndex?: {
+		readonly ir: PageIR;
+		readonly nodes: Map<string, PageIRNode>;
+	};
 }
 
 const PENDING_REMOTE_MAX_AGE_MS = 60_000;
@@ -154,6 +167,10 @@ export function createCollabDataPlugin(
 	// H2 — one re-entrant guard per plugin instance, threaded into
 	// dispatchRemoteIR and consulted by onDataChange.
 	const remoteGuard = createRemoteDispatchGuard();
+	// §P1 — one id→owner index per plugin instance, carried across
+	// dispatches so steady-state remote edits skip the full-document
+	// re-index the old per-`Data`-identity WeakMap forced every flush.
+	const locationIndex = createLocationIndex();
 	const telemetry = options.adapter as AdapterTelemetry;
 
 	return {
@@ -198,6 +215,7 @@ export function createCollabDataPlugin(
 									options,
 									ephemeralPeer,
 									remoteGuard,
+									locationIndex,
 									telemetry,
 									latestPeer,
 									latestChanged,
@@ -236,6 +254,7 @@ export function createCollabDataPlugin(
 								localShadow,
 								ephemeralPeer,
 								remoteGuard,
+								locationIndex,
 								telemetry,
 							);
 						}
@@ -257,6 +276,7 @@ export function createCollabDataPlugin(
 							localShadow,
 							ephemeralPeer,
 							remoteGuard,
+							locationIndex,
 							telemetry,
 						);
 					},
@@ -364,6 +384,7 @@ async function hydrateLatestSnapshot(
 	localShadow: LocalShadow,
 	localPeer: PeerInfo,
 	remoteGuard: RemoteDispatchGuard,
+	locationIndex: LocationIndex,
 	telemetry: AdapterTelemetry,
 ): Promise<void> {
 	try {
@@ -379,6 +400,7 @@ async function hydrateLatestSnapshot(
 			options,
 			localPeer,
 			remoteGuard,
+			locationIndex,
 			telemetry,
 		);
 	} catch (error) {
@@ -396,6 +418,7 @@ function dispatchRemoteIR(
 	options: CreateCollabPluginOptions,
 	localPeer: PeerInfo,
 	remoteGuard: RemoteDispatchGuard,
+	locationIndex: LocationIndex,
 	telemetry: AdapterTelemetry,
 	peer?: PeerInfo,
 	changed?: RemoteChange,
@@ -475,7 +498,7 @@ function dispatchRemoteIR(
 	const convStart = nowMs();
 	const projected =
 		changedIds !== undefined && currentData !== undefined
-			? projectChangedNodes(currentData, shielded, changedIds)
+			? projectChangedNodes(currentData, shielded, changedIds, locationIndex)
 			: null;
 	// `projected` is structurally a Puck `Data` (it clones a prior
 	// `irToPuckData` output and rebuilds owner items with the SAME
@@ -522,6 +545,10 @@ function dispatchRemoteIR(
 		) {
 			for (const action of planResult.actions) api.dispatch(action);
 		} else {
+			// §P1 — the slow path replaces the whole tree, so
+			// the carried index's structure assumptions no longer
+			// hold; drop it so the next flush reseeds from fresh data.
+			locationIndex.invalidate();
 			api.dispatch({ type: "setData", data });
 		}
 	} catch (error) {
@@ -591,7 +618,16 @@ function applyLocalShield(
 	if (!pending || !baseline) return remote;
 	if (now - shadow.pendingAt > PENDING_REMOTE_MAX_AGE_MS) return remote;
 	const pendingNodes = indexNodesById(pending);
-	const baselineNodes = indexNodesById(baseline);
+	// §P2 — reuse the cached baseline index when the converged
+	// baseline IR is unchanged (the common case: it only advances on
+	// our own dispatch, not on each interleaving remote flush).
+	let baselineNodes: Map<string, PageIRNode>;
+	if (shadow.baselineIndex?.ir === baseline) {
+		baselineNodes = shadow.baselineIndex.nodes;
+	} else {
+		baselineNodes = indexNodesById(baseline);
+		shadow.baselineIndex = { ir: baseline, nodes: baselineNodes };
+	}
 	// Stage 3 (§3.4) — when the changed ids are known, the shield only
 	// needs to act on nodes the local user actually dirtied (pending
 	// props differ from the converged baseline) unioned with the
@@ -637,11 +673,25 @@ function applyLocalShield(
 				}
 			}
 		}
+		// §P2 — visit every child (structural traversal is unavoidable
+		// to locate a shielded node) but allocate a replacement array
+		// ONLY along the ancestor path of an actually-rewritten node.
+		// Off-path subtrees keep identity and cost zero allocation,
+		// turning the old per-node `.map` (O(document) garbage) into
+		// O(changed + depth).
 		let children = node.children;
 		if (node.children) {
-			const rewritten = node.children.map(rewrite);
-			const childChanged = rewritten.some((c, i) => c !== node.children?.[i]);
-			if (childChanged) children = rewritten;
+			let rebuilt: PageIRNode[] | undefined;
+			let i = 0;
+			for (const original of node.children) {
+				const next = rewrite(original);
+				if (next !== original && rebuilt === undefined) {
+					rebuilt = node.children.slice(0, i);
+				}
+				if (rebuilt !== undefined) rebuilt.push(next);
+				i += 1;
+			}
+			if (rebuilt !== undefined) children = rebuilt;
 		}
 		if (nextProps === node.props && children === node.children) return node;
 		return {
