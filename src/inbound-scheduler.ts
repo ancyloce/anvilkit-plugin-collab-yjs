@@ -1,6 +1,27 @@
 import type { PageIR } from "@anvilkit/core/types";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
+import type { RemoteChange } from "./types.js";
+
+/**
+ * Merge the change descriptors of a superseded and its superseding
+ * inbound update. The superseded IR never reached Puck, so the winning
+ * flush must apply the union of every node both touched. If either side
+ * is `undefined` (unknown scope — legacy/blob/hydration) the merged
+ * result is `undefined`, forcing the plugin's safe O(document) path: a
+ * narrow apply that silently dropped an unknown-scope edit would lose
+ * data.
+ */
+function mergeRemoteChange(
+	a: RemoteChange | undefined,
+	b: RemoteChange | undefined,
+): RemoteChange | undefined {
+	if (a === undefined || b === undefined) return undefined;
+	const ids = new Set<string>(a.ids);
+	for (const id of b.ids) ids.add(id);
+	return { ids, structural: a.structural || b.structural };
+}
+
 /**
  * Inbound coalescing scheduler (H1).
  *
@@ -22,7 +43,12 @@ import type { PeerInfo } from "@anvilkit/plugin-version-history";
  */
 export interface InboundScheduler {
 	/** Buffer the latest remote IR for `roomKey` (latest-wins). */
-	enqueue(roomKey: string, ir: PageIR, peer: PeerInfo | undefined): void;
+	enqueue(
+		roomKey: string,
+		ir: PageIR,
+		peer: PeerInfo | undefined,
+		changed?: RemoteChange,
+	): void;
 	/** Synchronously drain (a single room, or all). Used by tests/teardown. */
 	flushNow(roomKey?: string): void;
 	/** Cancel the pending frame and drop all buffers. */
@@ -44,6 +70,7 @@ export interface CreateInboundSchedulerOptions {
 		ir: PageIR,
 		peer: PeerInfo | undefined,
 		queueDelayMs: number,
+		changed: RemoteChange | undefined,
 	) => void;
 	/** Reports the number of IRs dropped by coalescing (to metrics). */
 	readonly onCoalesced?: (count: number) => void;
@@ -61,6 +88,7 @@ interface BufferedEntry {
 	ir: PageIR;
 	peer: PeerInfo | undefined;
 	firstEnqueuedAt: number;
+	changed: RemoteChange | undefined;
 }
 
 const DEFAULT_BUDGET_MS = 16;
@@ -128,7 +156,7 @@ export function createInboundScheduler(
 		if (!entry) return;
 		buffers.delete(roomKey);
 		const queueDelayMs = Math.max(0, Date.now() - entry.firstEnqueuedAt);
-		options.flush(roomKey, entry.ir, entry.peer, queueDelayMs);
+		options.flush(roomKey, entry.ir, entry.peer, queueDelayMs, entry.changed);
 	}
 
 	function onFrame(): void {
@@ -146,13 +174,16 @@ export function createInboundScheduler(
 	}
 
 	return {
-		enqueue(roomKey, ir, peer): void {
+		enqueue(roomKey, ir, peer, changed): void {
 			if (destroyed) return;
 			const existing = buffers.get(roomKey);
 			if (existing) {
 				// The previously buffered IR for this room never made it
-				// to Puck — it is superseded and dropped.
+				// to Puck — it is superseded and dropped. The winning
+				// flush must still apply the union of every node both
+				// the dropped and the winning update touched.
 				options.onCoalesced?.(1);
+				existing.changed = mergeRemoteChange(existing.changed, changed);
 				existing.ir = ir;
 				existing.peer = peer;
 			} else {
@@ -160,6 +191,7 @@ export function createInboundScheduler(
 					ir,
 					peer,
 					firstEnqueuedAt: Date.now(),
+					changed,
 				});
 			}
 			ensureScheduled();
