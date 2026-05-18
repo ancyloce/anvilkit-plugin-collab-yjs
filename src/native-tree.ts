@@ -53,6 +53,52 @@ export {
 
 interface NodeYMap extends Y.Map<unknown> {}
 
+// A4 — concentrate the unavoidable runtime `instanceof` casts on
+// untrusted CRDT state into four accessors so per-node Y.Map/Y.Array
+// shape assumptions live in exactly one place. Read accessors return
+// `undefined` for a missing/ill-typed slot; the `getOrCreate*`
+// accessors replace an ill-typed slot with a fresh empty container
+// (the existing write-path behaviour, unchanged).
+
+function getNodeMap(root: Y.Map<unknown>, id: string): NodeYMap | undefined {
+	const m = root.get(nativeNodeKey(id));
+	return m instanceof Y.Map ? (m as NodeYMap) : undefined;
+}
+
+function getOrCreateNodeMap(root: Y.Map<unknown>, key: string): NodeYMap {
+	const existing = root.get(key);
+	if (existing instanceof Y.Map) return existing as NodeYMap;
+	const created = new Y.Map<unknown>();
+	root.set(key, created);
+	return created as NodeYMap;
+}
+
+function getPropsMap(nodeMap: Y.Map<unknown>): Y.Map<unknown> | undefined {
+	const p = nodeMap.get("props");
+	return p instanceof Y.Map ? (p as Y.Map<unknown>) : undefined;
+}
+
+function getOrCreatePropsMap(nodeMap: Y.Map<unknown>): Y.Map<unknown> {
+	const existing = nodeMap.get("props");
+	if (existing instanceof Y.Map) return existing as Y.Map<unknown>;
+	const created = new Y.Map<unknown>();
+	nodeMap.set("props", created);
+	return created;
+}
+
+function getChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> | undefined {
+	const c = nodeMap.get("childIds");
+	return c instanceof Y.Array ? (c as Y.Array<string>) : undefined;
+}
+
+function getOrCreateChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> {
+	const existing = nodeMap.get("childIds");
+	if (existing instanceof Y.Array) return existing as Y.Array<string>;
+	const created = new Y.Array<string>();
+	nodeMap.set("childIds", created);
+	return created;
+}
+
 /**
  * Reason a guarded native-tree read bailed out early. Shared Yjs data
  * is remote-origin and can be malformed or malicious (M4): cycles,
@@ -129,18 +175,117 @@ export function applyIRToNativeTree(
 	collectIds(ir.root, desiredIds);
 
 	walkNodes(ir.root, (node) => {
-		const key = nativeNodeKey(node.id);
-		let nodeMap = root.get(key) as NodeYMap | undefined;
-		if (!(nodeMap instanceof Y.Map)) {
-			nodeMap = new Y.Map<unknown>();
-			root.set(key, nodeMap);
-		}
+		const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(node.id));
 		writeNode(nodeMap, node, baselineNodes.get(node.id));
 	});
 
 	const baselineIds = new Set(baselineNodes.keys());
 	for (const id of baselineIds) {
 		if (!desiredIds.has(id)) root.delete(nativeNodeKey(id));
+	}
+}
+
+/**
+ * I1/§3.1 — local-save IR diff. Classifies a save as either a pure
+ * node-local prop patch (return `structural: false` + the exact set
+ * of changed nodes) or a topology change (`structural: true`).
+ *
+ * "Structural" deliberately mirrors {@link deriveChangedNodeIds}: a
+ * missing prior IR, a root-id change, an added/removed node, or any
+ * parent's `childIds` reorder/membership change. Type / slot /
+ * slotKind / props / assets / meta differences are node-local and
+ * carried in `changed` (handled by `writeNode`'s baseline diff).
+ *
+ * For a non-structural save, `applyChangedNodesToNativeTree` writing
+ * ONLY `changed` is byte-identical to `applyIRToNativeTree` writing
+ * every node, because `writeNode(node, baseline)` on an unchanged
+ * node produces zero Y.Doc mutations (every reconcile is a no-op).
+ */
+export function diffIRNodesForLocalSave(
+	prev: PageIR | undefined,
+	next: PageIR,
+): {
+	structural: boolean;
+	changed: Map<string, PageIRNode>;
+	baseline: Map<string, PageIRNode>;
+} {
+	const empty = {
+		structural: true,
+		changed: new Map<string, PageIRNode>(),
+		baseline: new Map<string, PageIRNode>(),
+	};
+	if (prev === undefined || prev.root.id !== next.root.id) return empty;
+
+	const prevById = new Map<string, PageIRNode>();
+	walkNodes(prev.root, (n) => prevById.set(n.id, n));
+	const nextById = new Map<string, PageIRNode>();
+	walkNodes(next.root, (n) => nextById.set(n.id, n));
+
+	if (prevById.size !== nextById.size) return empty;
+	for (const id of nextById.keys()) {
+		if (!prevById.has(id)) return empty;
+	}
+
+	const changed = new Map<string, PageIRNode>();
+	const baseline = new Map<string, PageIRNode>();
+	for (const [id, n] of nextById) {
+		const p = prevById.get(id);
+		if (p === undefined) return empty;
+		// Any parent relink (childIds reorder/membership) → structural.
+		const nKids = (n.children ?? []).map((c) => c.id);
+		const pKids = (p.children ?? []).map((c) => c.id);
+		if (nKids.length !== pKids.length) return empty;
+		for (let i = 0; i < nKids.length; i += 1) {
+			if (nKids[i] !== pKids[i]) return empty;
+		}
+		if (
+			n.type !== p.type ||
+			n.slot !== p.slot ||
+			n.slotKind !== p.slotKind ||
+			JSON.stringify(n.props ?? {}) !== JSON.stringify(p.props ?? {}) ||
+			JSON.stringify(n.assets ?? null) !== JSON.stringify(p.assets ?? null) ||
+			JSON.stringify(n.meta ?? null) !== JSON.stringify(p.meta ?? null)
+		) {
+			changed.set(id, n);
+			baseline.set(id, p);
+		}
+	}
+	return { structural: false, changed, baseline };
+}
+
+/**
+ * Incremental sibling of {@link applyIRToNativeTree}: writes only the
+ * nodes in `changed` (plus conditional root version/assets/metadata).
+ * Caller MUST gate on `!diffIRNodesForLocalSave(...).structural` so
+ * the id-set and every parent's `childIds` are unchanged — there are
+ * no node additions/removals to sweep and no relinks to apply.
+ */
+export function applyChangedNodesToNativeTree(
+	root: Y.Map<unknown>,
+	ir: PageIR,
+	prevIR: PageIR | undefined,
+	changed: ReadonlyMap<string, PageIRNode>,
+	baseline: ReadonlyMap<string, PageIRNode>,
+): void {
+	// Root-level writes use the EXACT conditions of the full
+	// `applyIRToNativeTree` (compare next vs the prior IR) so the
+	// resulting Y.Doc is byte-identical — this path only omits the
+	// per-node writes that would have been no-ops anyway.
+	if (root.get(NATIVE_VERSION_KEY) !== ir.version) {
+		root.set(NATIVE_VERSION_KEY, ir.version);
+	}
+	if (root.get(NATIVE_ROOT_ID_KEY) !== ir.root.id) {
+		root.set(NATIVE_ROOT_ID_KEY, ir.root.id);
+	}
+	const newAssets = JSON.stringify(ir.assets ?? []);
+	const baseAssets = JSON.stringify(prevIR?.assets ?? []);
+	if (newAssets !== baseAssets) root.set(NATIVE_ASSETS_KEY, newAssets);
+	const newMeta = JSON.stringify(ir.metadata ?? {});
+	const baseMeta = JSON.stringify(prevIR?.metadata ?? {});
+	if (newMeta !== baseMeta) root.set(NATIVE_METADATA_KEY, newMeta);
+	for (const [id, node] of changed) {
+		const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(id));
+		writeNode(nodeMap, node, baseline.get(id));
 	}
 }
 
@@ -227,20 +372,10 @@ function writeNode(
 	writeOrClear(map, "slot", node.slot, baseline?.slot);
 	writeOrClear(map, "slotKind", node.slotKind, baseline?.slotKind);
 
-	let propsMap = map.get("props");
-	if (!(propsMap instanceof Y.Map)) {
-		propsMap = new Y.Map<unknown>();
-		map.set("props", propsMap);
-	}
-	reconcileProps(propsMap as Y.Map<unknown>, node.props, baseline?.props);
+	reconcileProps(getOrCreatePropsMap(map), node.props, baseline?.props);
 
-	let childIds = map.get("childIds");
-	if (!(childIds instanceof Y.Array)) {
-		childIds = new Y.Array<string>();
-		map.set("childIds", childIds);
-	}
 	reconcileChildIds(
-		childIds as Y.Array<string>,
+		getOrCreateChildIds(map),
 		node.children ?? [],
 		baseline?.children ?? [],
 	);
@@ -505,13 +640,13 @@ function parseNodeOwn(
 	root: Y.Map<unknown>,
 	id: string,
 ): { node: Record<string, unknown>; childIds: string[] } | undefined {
-	const map = root.get(nativeNodeKey(id));
-	if (!(map instanceof Y.Map)) return undefined;
+	const map = getNodeMap(root, id);
+	if (map === undefined) return undefined;
 	const type = map.get("type");
 	if (typeof type !== "string") return undefined;
-	const propsMap = map.get("props");
+	const propsMap = getPropsMap(map);
 	const props: Record<string, unknown> = {};
-	if (propsMap instanceof Y.Map) {
+	if (propsMap !== undefined) {
 		for (const [key, raw] of propsMap.entries()) {
 			if (typeof raw !== "string") continue;
 			try {
@@ -521,9 +656,9 @@ function parseNodeOwn(
 			}
 		}
 	}
-	const childIdsRaw = map.get("childIds");
+	const childIdsRaw = getChildIds(map);
 	const childIds: string[] = [];
-	if (childIdsRaw instanceof Y.Array) {
+	if (childIdsRaw !== undefined) {
 		for (const childId of childIdsRaw.toArray()) {
 			if (typeof childId === "string") childIds.push(childId);
 		}
