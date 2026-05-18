@@ -9,6 +9,7 @@ import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
 import packageJson from "../package.json";
+import { projectChangedNodes } from "./incremental-projection.js";
 import {
 	createInboundScheduler,
 	type InboundScheduler,
@@ -138,6 +139,14 @@ export function createCollabDataPlugin(
 ): StudioPlugin {
 	let unsubscribe: (() => void) | undefined;
 	let scheduler: InboundScheduler | undefined;
+	// C3 — initial snapshot hydration must run when `getPuckApi()` is
+	// safe to call. In a real `<Studio>` mount that is the post-mount
+	// `onReady` hook, not `onInit` (the binder has not captured the
+	// API yet). Headless/test contexts expose a working `getPuckApi()`
+	// during `onInit`, so we still hydrate there for deterministic,
+	// synchronous post-init state. This flag makes the two paths
+	// mutually exclusive so hydration never runs twice.
+	let hydrationDone = false;
 	const pendingRemoteData = new Map<string, PendingRemoteEntry>();
 	const localShadow: LocalShadow = { pendingAt: 0 };
 	const ephemeralPeer = options.localPeer ?? createEphemeralPeer();
@@ -203,12 +212,46 @@ export function createCollabDataPlugin(
 								scheduler?.enqueue(ROOM_KEY, ir, peer, changed);
 							},
 						);
-						// Hydration deliberately bypasses the scheduler: it
-						// is a one-shot initial paint that must stay
-						// synchronous with onInit so hosts/tests observe
-						// post-init state immediately.
+						// Hydration deliberately bypasses the scheduler: it is a
+						// one-shot initial paint. C3 — only hydrate here when
+						// `getPuckApi()` is already callable (headless / test
+						// contexts). In a real `<Studio>` mount the effect-time
+						// binder has not run yet, so probing throws
+						// PUCK_API_UNBOUND; we defer to the post-mount `onReady`
+						// hook instead of failing the initial hydrate or logging
+						// a dispatch error.
+						let puckApiReady = false;
+						try {
+							initCtx.getPuckApi();
+							puckApiReady = true;
+						} catch {
+							puckApiReady = false;
+						}
+						if (puckApiReady && !hydrationDone) {
+							hydrationDone = true;
+							await hydrateLatestSnapshot(
+								initCtx,
+								options,
+								pendingRemoteData,
+								localShadow,
+								ephemeralPeer,
+								remoteGuard,
+								telemetry,
+							);
+						}
+					},
+					async onReady(readyCtx) {
+						// C3 — real-mount hydration path. Runs once the Puck-API
+						// binder has captured `getPuckApi()`. Skipped if `onInit`
+						// already hydrated (headless / test) so hydration is
+						// exactly-once.
+						if (hydrationDone) return;
+						if (typeof options.adapter.subscribe !== "function") {
+							return;
+						}
+						hydrationDone = true;
 						await hydrateLatestSnapshot(
-							initCtx,
+							readyCtx,
 							options,
 							pendingRemoteData,
 							localShadow,
@@ -222,7 +265,13 @@ export function createCollabDataPlugin(
 						// (and within one frame after) a remote dispatch,
 						// including per-`replace` intermediate states that
 						// the old final-key match let leak into save().
-						if (remoteGuard.withinGraceWindow(Date.now())) return;
+						// `noteSuppressed()` tells the dispatch region a
+						// synchronous echo was handled here, so it can skip
+						// the O(document) exact-data fallback entirely.
+						if (remoteGuard.withinGraceWindow(Date.now())) {
+							remoteGuard.noteSuppressed();
+							return;
+						}
 						// M3 — only pay the O(document) stable stringify
 						// echo check when an echo could actually be
 						// pending. The common local-edit path (no remote
@@ -354,11 +403,21 @@ function dispatchRemoteIR(
 	const validated = runValidation(ctx, ir, options);
 	if (validated === null) return;
 	const checkedPeer = peer ?? localPeer;
+	// Stage 3 (§3.4) — a non-structural remote edit can only newly
+	// violate inbound policy on the nodes it actually touched; every
+	// other node was already validated on a prior flush / hydration,
+	// and local edits are policy-checked on the OUTBOUND path. So
+	// scope the inbound `canEdit` walk to the changed ids. Structural
+	// updates, hydration, and legacy adapters (`changed === undefined`)
+	// keep the full-tree check.
+	const changedIds =
+		changed !== undefined && !changed.structural ? changed.ids : undefined;
 	const violation = enforcePolicy(
 		validated,
 		checkedPeer,
 		options.policy,
 		"inbound",
+		changedIds,
 	);
 	if (violation) {
 		ctx.log(
@@ -376,78 +435,84 @@ function dispatchRemoteIR(
 	// against the PREVIOUS converged baseline, so remote edits to props
 	// the local user did not touch still pass through. `validated`
 	// becomes the new baseline only AFTER the shield reads the old one.
-	const shielded = applyLocalShield(validated, localShadow, Date.now());
+	// Stage 3 (§3.4) — when the changed ids are known (non-structural
+	// remote edit) the shield only needs to consider nodes the remote
+	// touched OR nodes the local user has dirtied; every other node is
+	// identical in remote/baseline/pending so the per-prop triple
+	// stringify is wasted. `applyLocalShield` derives the dirty set
+	// from its existing indexes and unions it with `changedIds`.
+	// `undefined` (structural / hydration / legacy) keeps the full
+	// recursive shield exactly as before.
+	const shielded = applyLocalShield(
+		validated,
+		localShadow,
+		Date.now(),
+		changedIds,
+	);
 	localShadow.lastDispatched = validated;
-	const convStart = nowMs();
-	const data = irToPuckData(shielded);
-	telemetry.recordTiming?.("conversion", nowMs() - convStart);
 	// Reading current data via `ctx.getData()` instead of
-	// `getPuckApi().appState` keeps this path off Puck's API when the
-	// plugin context is configured without a live `<Puck>` mount
-	// (tests, headless validation).
+	// `getPuckApi().appState` keeps this path off Puck's API when
+	// the plugin context is configured without a live `<Puck>`
+	// mount (tests, headless validation). Read BEFORE conversion so
+	// the Stage-2 incremental projection can reuse it.
 	let currentData: PuckData | undefined;
 	try {
 		currentData = ctx.getData() as PuckData;
 	} catch {
-		// `getData` shouldn't throw, but if a host implementation does,
-		// fall through to the dispatch path rather than swallow the
-		// remote update silently.
+		// `getData` shouldn't throw, but if a host implementation
+		// does, fall through to the dispatch path rather than swallow
+		// the remote update silently.
 		currentData = undefined;
 	}
+	// Stage 2 (§3.2/§3.3) — when the adapter pinned the changed
+	// ids and Puck's current data is available, rebuild ONLY the
+	// owner item(s) of those ids instead of converting the whole
+	// IR. `projectChangedNodes` returns null for any shape it
+	// cannot prove equals `irToPuckData(shielded)` (zone-bearing
+	// owners, root-prop/root-id edits, relocated ids), so the full
+	// round-trip stays the correctness backstop. Untouched items
+	// keep object identity → the planner skips them via `a === b`.
+	const convStart = nowMs();
+	const projected =
+		changedIds !== undefined && currentData !== undefined
+			? projectChangedNodes(currentData, shielded, changedIds)
+			: null;
+	// `projected` is structurally a Puck `Data` (it clones a prior
+	// `irToPuckData` output and rebuilds owner items with the SAME
+	// shape `irToPuckData` produces). Cast to the full-conversion
+	// return type so the `setData` dispatch and planner see one type.
+	const data = (projected ?? irToPuckData(shielded)) as ReturnType<
+		typeof irToPuckData
+	>;
+	telemetry.recordTiming?.("conversion", nowMs() - convStart);
 	// T2 — drive the no-op skip from the dispatch plan instead of a
-	// second full-document `stableStringify(currentData)` compared to
-	// `stableStringify(data)`. A non-null plan with zero actions means
-	// the structure is stable and every touched node is byte-identical
-	// to what Puck already holds — i.e. a true no-op: a server echo of
-	// our own write, or a CRDT merge that changed nothing the host
-	// renders. That used to require TWO O(document) stringifies on
-	// EVERY inbound flush (cursor-jump / spurious-re-render guard);
-	// with the adapter's changed-id set the planner is O(changed), so
-	// this removes one of the two remaining Tier-2 full-document
-	// stringifies from the hot path. (`actions === null` —
-	// structural / no-current-data / root- or zone-shape change — is
-	// NOT a no-op and still proceeds to dispatch, exactly as before.)
-	const changedIds =
-		changed !== undefined && !changed.structural ? changed.ids : undefined;
+	// second full-document `stableStringify(currentData)` compared
+	// to `stableStringify(data)`. A non-null plan with zero actions
+	// means the structure is stable and every touched node is
+	// byte-identical to what Puck already holds — a true no-op
+	// (server echo of our own write, or a CRDT merge that changed
+	// nothing the host renders). (`actions === null` — structural /
+	// no-current-data / root- or zone-shape change — is NOT a no-op
+	// and still proceeds to dispatch, exactly as before.)
 	const planResult = planReplaceActions(currentData, data, changedIds);
 	if (planResult.actions !== null && planResult.actions.length === 0) return;
-	// The remaining `key` is the pendingRemoteData echo-match key. Its
-	// contract is shared with `onDataChange`'s
-	// `consumePendingRemoteData`, which only sees the full
-	// post-dispatch `data` (no changed-id context), so it must stay a
-	// full-document identity. Narrowing it safely needs a coordinated
-	// onDataChange-side redesign of echo suppression — a separate,
-	// higher-risk change deliberately left out of scope here.
-	const key = stableStringify(data);
-	const now = Date.now();
-	sweepPendingRemoteData(pendingRemoteData, now);
-	const existing = pendingRemoteData.get(key);
-	if (existing) {
-		existing.count += 1;
-		existing.addedAt = now;
-	} else {
-		pendingRemoteData.set(key, { count: 1, addedAt: now });
-	}
-	// H2 — hold the guard active across the ENTIRE dispatch region so
-	// every onDataChange Puck emits per `replace` (plus a late async
-	// onChange, via the guard's grace window) is classified as remote
-	// echo, not a local save. `pendingRemoteData` above stays as the
-	// precise exact-key fallback for an onChange that lands after the
-	// grace window closes.
+	// H2 — hold the guard active across the ENTIRE dispatch
+	// region so every onDataChange Puck emits per `replace` is
+	// classified as remote echo, not a local save.
 	const token = remoteGuard.begin();
 	const dispatchStart = nowMs();
+	let dispatchFailed = false;
 	try {
-		// `planResult` (and its O(changed) `changedIds` narrowing) was
-		// computed above so it could also drive the no-op skip. Prefer
-		// atomic `replace` per changed item over the heavy `setData`:
-		// `replace` only re-renders the replaced item; siblings keep
-		// React identity, preserving a focused peer's textarea caret
-		// when a remote peer edits a different node — or a different
-		// prop of the same node (the focused field's `useLocalValue`
-		// short-circuits on `isFocused`). Falls through to `setData`
-		// for structural changes (insert/remove/reorder, zone topology)
-		// or when the replace count crosses the batch threshold
-		// (P1 — one setData beats N dispatches).
+		// `planResult` (and its O(changed) `changedIds` narrowing)
+		// was computed above so it could also drive the no-op skip.
+		// Prefer atomic `replace` per changed item over the heavy
+		// `setData`: `replace` only re-renders the replaced item;
+		// siblings keep React identity, preserving a focused peer's
+		// textarea caret when a remote peer edits a different node —
+		// or a different prop of the same node. Falls through to
+		// `setData` for structural changes (insert/remove/reorder,
+		// zone topology) or when the replace count crosses the batch
+		// threshold (P1 — one setData beats N dispatches).
 		const api = ctx.getPuckApi();
 		const replaceBatchThreshold =
 			options.replaceBatchThreshold ?? REPLACE_BATCH_THRESHOLD;
@@ -460,19 +525,36 @@ function dispatchRemoteIR(
 			api.dispatch({ type: "setData", data });
 		}
 	} catch (error) {
-		// Roll back the speculative count bump since the echo never made it
-		// into Puck's pipeline and no matching onDataChange will arrive.
-		const rollback = pendingRemoteData.get(key);
-		if (rollback) {
-			if (rollback.count <= 1) pendingRemoteData.delete(key);
-			else rollback.count -= 1;
-		}
+		dispatchFailed = true;
 		ctx.log("error", "plugin-collab-yjs: remote update dispatch failed.", {
 			error,
 		});
 	} finally {
 		telemetry.recordTiming?.("dispatch", nowMs() - dispatchStart);
 		remoteGuard.end(token);
+		// I1/§4 — the exact-data `pendingRemoteData` fallback is now
+		// LAZY. A synchronous host (Puck) fires its echo onChange(s)
+		// inside `api.dispatch` while the guard is active; those are
+		// suppressed there (no stringify) and reported via
+		// `consumedSyncEcho()`. Only an async/pathological host that
+		// emits onChange AFTER the dispatch returns needs the
+		// exact-data match — so the O(document) `stableStringify` is
+		// paid ONLY on that path, never on the synchronous hot path
+		// (every flush previously stringified the whole tree here).
+		// A failed dispatch produces no echo, so it registers
+		// nothing (replaces the old speculative count + rollback).
+		if (!dispatchFailed && !remoteGuard.consumedSyncEcho()) {
+			const key = stableStringify(data);
+			const now = Date.now();
+			sweepPendingRemoteData(pendingRemoteData, now);
+			const existing = pendingRemoteData.get(key);
+			if (existing) {
+				existing.count += 1;
+				existing.addedAt = now;
+			} else {
+				pendingRemoteData.set(key, { count: 1, addedAt: now });
+			}
+		}
 	}
 }
 
@@ -502,6 +584,7 @@ function applyLocalShield(
 	remote: PageIR,
 	shadow: LocalShadow,
 	now: number,
+	changedIds?: ReadonlySet<string>,
 ): PageIR {
 	const pending = shadow.pending;
 	const baseline = shadow.lastDispatched;
@@ -509,12 +592,32 @@ function applyLocalShield(
 	if (now - shadow.pendingAt > PENDING_REMOTE_MAX_AGE_MS) return remote;
 	const pendingNodes = indexNodesById(pending);
 	const baselineNodes = indexNodesById(baseline);
+	// Stage 3 (§3.4) — when the changed ids are known, the shield only
+	// needs to act on nodes the local user actually dirtied (pending
+	// props differ from the converged baseline) unioned with the
+	// remote-changed ids. Every other node has pending === baseline so
+	// the inner `localVal !== baseVal` test can never fire — skipping
+	// it just avoids the wasted per-prop triple stringify. `undefined`
+	// (structural / hydration / legacy) keeps the full shield.
+	let scope: Set<string> | undefined;
+	if (changedIds !== undefined) {
+		scope = new Set(changedIds);
+		for (const [id, p] of pendingNodes) {
+			const b = baselineNodes.get(id);
+			if (
+				b !== undefined &&
+				stableStringify(p.props ?? {}) !== stableStringify(b.props ?? {})
+			) {
+				scope.add(id);
+			}
+		}
+	}
 	let mutated = false;
 	const rewrite = (node: PageIRNode): PageIRNode => {
 		const p = pendingNodes.get(node.id);
 		const b = baselineNodes.get(node.id);
 		let nextProps = node.props;
-		if (p && b) {
+		if (p && b && (scope === undefined || scope.has(node.id))) {
 			const pProps = p.props ?? {};
 			const bProps = b.props ?? {};
 			const rProps = node.props ?? {};
@@ -702,6 +805,7 @@ function enforcePolicy(
 	peer: PeerInfo,
 	policy: CollabPolicy | undefined,
 	direction: "inbound" | "outbound",
+	scopeIds?: ReadonlySet<string>,
 ): PolicyViolation | undefined {
 	if (!policy) return undefined;
 	const rejected: string[] = [];
@@ -713,6 +817,11 @@ function enforcePolicy(
 	// policy state changes between calls always take effect (M5).
 	const cache = new Map<string, boolean>();
 	walkNodes(ir.root, (node) => {
+		// Stage 3 (§3.4) — when scoped (non-structural inbound), only
+		// evaluate the nodes the remote edit touched. Traversal stays
+		// O(nodes) but the (potentially user-supplied, arbitrarily
+		// expensive) `policy.canEdit` runs only for changed ids.
+		if (scopeIds !== undefined && !scopeIds.has(node.id)) return;
 		const cacheKey = `${node.id}::${peer.id}`;
 		const cached = cache.get(cacheKey);
 		if (cached !== undefined) {

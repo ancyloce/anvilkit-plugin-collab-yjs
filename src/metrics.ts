@@ -1,4 +1,4 @@
-import type { MetricsSnapshot, TimingKind } from "./types.js";
+import type { DegradedReason, MetricsSnapshot, TimingKind } from "./types.js";
 
 // Re-exported for existing importers (plugin.ts) — canonical home is
 // types.ts so metrics.ts and types.ts don't form an import cycle.
@@ -28,7 +28,7 @@ export interface MetricsState {
 	incDispatchFailure(): void;
 	incChurn(): void;
 	incPresenceValidationFailure(): void;
-	setDegraded(value: boolean): void;
+	setDegraded(value: boolean, reason?: DegradedReason): void;
 	/** Count remote IRs superseded in the inbound buffer before flush (H1). */
 	incInboundCoalesced(n?: number): void;
 	/** Record a hot-path stage duration in milliseconds (P1). */
@@ -60,6 +60,7 @@ export function createMetricsState(): MetricsState {
 	let dispatchFailures = 0;
 	let presenceValidationFailures = 0;
 	let degraded = false;
+	const degradedReasons = new Set<DegradedReason>();
 	let snapshotCounter = 0;
 	let inboundCoalesced = 0;
 	const latencyWindow: number[] = [];
@@ -114,8 +115,12 @@ export function createMetricsState(): MetricsState {
 		incPresenceValidationFailure(): void {
 			presenceValidationFailures += 1;
 		},
-		setDegraded(value: boolean): void {
+		setDegraded(value: boolean, reason?: DegradedReason): void {
 			degraded = value;
+			// Reasons are an append-only audit trail — never cleared on
+			// `setDegraded(false)`, so a transient recovery doesn't erase
+			// the evidence a host needs to triage why it happened.
+			if (value && reason !== undefined) degradedReasons.add(reason);
 		},
 		incInboundCoalesced(n = 1): void {
 			if (Number.isFinite(n) && n > 0) inboundCoalesced += n;
@@ -143,6 +148,7 @@ export function createMetricsState(): MetricsState {
 				syncLatencyP95Ms: percentile(sorted, 0.95),
 				syncLatencySamples: sorted.length,
 				degraded,
+				degradedReasons: [...degradedReasons],
 				presenceValidationFailures,
 				inboundCoalesced,
 				inboundQueueDelayP50Ms: timingP50("inboundQueueDelay"),

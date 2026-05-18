@@ -162,6 +162,7 @@ export function createDebouncedAdapter(
 							syncLatencyP95Ms: null,
 							syncLatencySamples: 0,
 							degraded: false,
+							degradedReasons: [],
 							presenceValidationFailures: 0,
 							inboundCoalesced: 0,
 							inboundQueueDelayP50Ms: null,
