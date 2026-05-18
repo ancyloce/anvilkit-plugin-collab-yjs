@@ -1,5 +1,5 @@
 import type { PageIR } from "@anvilkit/core/types";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createInboundScheduler } from "../inbound-scheduler.js";
 import { manualInboundScheduler } from "./helpers/inbound.js";
@@ -72,5 +72,83 @@ describe("createInboundScheduler (H1)", () => {
 		s.enqueue("default", ir("z"), undefined);
 		s.flushNow();
 		expect(flush).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("createInboundScheduler default scheduler — rAF failsafe (I4)", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+	});
+
+	it("flushes via the wall-clock timeout when rAF is parked", () => {
+		vi.useFakeTimers();
+		// rAF that NEVER invokes its callback (parked tab).
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn(() => 1),
+		);
+		vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+		const flush = vi.fn();
+		// No `scheduler` injected → exercises defaultScheduler.
+		const s = createInboundScheduler({ flush });
+		s.enqueue("default", ir("x"), { id: "p" });
+
+		expect(flush).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(249);
+		expect(flush).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1); // hit max(16, 250) = 250ms failsafe
+		expect(flush).toHaveBeenCalledTimes(1);
+		expect((flush.mock.calls[0]![1] as PageIR).root.id).toBe("x");
+		s.destroy();
+	});
+
+	it("does not double-flush when rAF fires before the failsafe", () => {
+		vi.useFakeTimers();
+		let rafCb: (() => void) | undefined;
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((cb: () => void) => {
+				rafCb = cb;
+				return 7;
+			}),
+		);
+		const caf = vi.fn();
+		vi.stubGlobal("cancelAnimationFrame", caf);
+
+		const flush = vi.fn();
+		const s = createInboundScheduler({ flush });
+		s.enqueue("default", ir("y"), undefined);
+
+		rafCb?.(); // rAF wins the race
+		expect(flush).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(5000); // failsafe timer must have been cleared
+		expect(flush).toHaveBeenCalledTimes(1);
+		s.destroy();
+	});
+
+	it("destroy() cancels both the rAF and the failsafe timer", () => {
+		vi.useFakeTimers();
+		let rafCb: (() => void) | undefined;
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((cb: () => void) => {
+				rafCb = cb;
+				return 9;
+			}),
+		);
+		const caf = vi.fn();
+		vi.stubGlobal("cancelAnimationFrame", caf);
+
+		const flush = vi.fn();
+		const s = createInboundScheduler({ flush });
+		s.enqueue("default", ir("z"), undefined);
+		s.destroy();
+
+		expect(caf).toHaveBeenCalledWith(9); // rAF handle cancelled
+		vi.advanceTimersByTime(5000); // failsafe timer cancelled → no flush
+		rafCb?.(); // a late frame after destroy must be a no-op
+		expect(flush).not.toHaveBeenCalled();
 	});
 });

@@ -307,8 +307,122 @@ function reconcileChildIds(
 	const desired = children.map((c) => c.id);
 	const baseIds = baseline.map((c) => c.id);
 	if (sameList(desired, baseIds)) return;
-	target.delete(0, target.length);
-	if (desired.length > 0) target.insert(0, desired);
+	reconcileKeyedArray(target, baseIds, desired);
+}
+
+/**
+ * CRDT-safe keyed reconcile for a child-id `Y.Array` (I5).
+ *
+ * The previous implementation did `target.delete(0, len)` +
+ * `target.insert(0, desired)` on ANY change. Two replicas concurrently
+ * editing the same parent's `childIds` then each replaced the whole
+ * array; Yjs still converges, but to a *garbled* union (duplicated /
+ * dropped children) — disjoint structural intents did NOT both survive.
+ *
+ * This instead derives the LOCAL delta (`baseIds → desiredIds`) and
+ * applies only minimal, position-targeted ops against the array's
+ * **live** contents (which may already carry a remote peer's
+ * concurrent ops), mirroring how {@link reconcileProps} writes only the
+ * keys the local session changed. It is idempotent under server echo
+ * (ops whose effect is already present are skipped), so a peer's own
+ * write coming back through the relay is a no-op.
+ *
+ * Guarantees for concurrent **disjoint** structural edits (the I5
+ * acceptance case): a remote peer's added/removed ids are never
+ * clobbered, the local peer's add/remove/reorder all apply, and both
+ * replicas converge to the same sensible array. Concurrent reorders of
+ * the *same* ids by two peers have no canonical CRDT answer; Yjs still
+ * converges deterministically and the result is strictly better than
+ * the old whole-array replacement.
+ */
+function reconcileKeyedArray(
+	target: Y.Array<string>,
+	baseIds: readonly string[],
+	desiredIds: readonly string[],
+): void {
+	// Single live read; all index math is done on the `work` JS mirror
+	// and translated to targeted Y.Array ops. (The previous version
+	// called `target.toArray()` + `indexOf` inside loops — O(n²/n³) and
+	// 2000 individual inserts on a first 2000-child build, which bloated
+	// the seed update and blew the hydration budget.)
+	const cur = target.toArray();
+	if (sameList(cur, desiredIds)) return; // already converged / echo
+
+	// Fast path: nothing local to preserve a delta against (fresh node,
+	// L1 migration, first save). One bulk insert — O(n), one op, exactly
+	// like the pre-I5 behaviour for the non-concurrent build path.
+	if (cur.length === 0) {
+		if (desiredIds.length > 0) target.insert(0, [...desiredIds]);
+		return;
+	}
+
+	const desiredSet = new Set(desiredIds);
+	const baseSet = new Set(baseIds);
+
+	// 1. Removals the LOCAL peer intends (in base, no longer desired),
+	//    only where still present. Collect indices in one pass and
+	//    delete high→low so earlier indices stay valid. A concurrent
+	//    remote delete (id already gone) is simply not in `cur` → no-op,
+	//    so we never disturb it.
+	const work: string[] = [];
+	for (const id of cur) {
+		if (baseSet.has(id) && !desiredSet.has(id)) continue; // local remove
+		work.push(id);
+	}
+	for (let i = cur.length - 1; i >= 0; i -= 1) {
+		const id = cur[i] as string;
+		if (baseSet.has(id) && !desiredSet.has(id)) target.delete(i, 1);
+	}
+
+	// 2. Additions the LOCAL peer made (in desired, not in base),
+	//    inserted in desired order after the nearest preceding desired
+	//    id that currently exists. Skip ids already present (remote
+	//    concurrent add / echo) so a child is never duplicated.
+	for (let di = 0; di < desiredIds.length; di += 1) {
+		const id = desiredIds[di] as string;
+		if (baseSet.has(id)) continue;
+		if (work.includes(id)) continue;
+		let insertAt = 0;
+		for (let k = di - 1; k >= 0; k -= 1) {
+			const pi = work.indexOf(desiredIds[k] as string);
+			if (pi >= 0) {
+				insertAt = pi + 1;
+				break;
+			}
+		}
+		target.insert(insertAt, [id]);
+		work.splice(insertAt, 0, id);
+	}
+
+	// 3. Reorder — only among ids the local peer controls (present AND
+	//    desired). Ids present but neither desired nor in base were
+	//    inserted concurrently by a remote peer: never move or drop them
+	//    (their absolute slots are preserved). Move only misplaced
+	//    controlled ids via targeted delete+insert, never the whole
+	//    array, so a remote peer's disjoint ops survive the merge.
+	for (let slot = 0; slot < desiredIds.length; slot += 1) {
+		const wantId = desiredIds[slot] as string;
+		let seen = -1;
+		let absIndex = -1;
+		for (let i = 0; i < work.length; i += 1) {
+			if (desiredSet.has(work[i] as string)) {
+				seen += 1;
+				if (seen === slot) {
+					absIndex = i;
+					break;
+				}
+			}
+		}
+		if (absIndex < 0) continue;
+		if (work[absIndex] === wantId) continue;
+		const fromIndex = work.indexOf(wantId);
+		if (fromIndex < 0) continue;
+		target.delete(fromIndex, 1);
+		work.splice(fromIndex, 1);
+		const insertAt = fromIndex < absIndex ? absIndex - 1 : absIndex;
+		target.insert(insertAt, [wantId]);
+		work.splice(insertAt, 0, wantId);
+	}
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {

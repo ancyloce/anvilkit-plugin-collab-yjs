@@ -37,6 +37,11 @@ export interface SnapshotsModuleOptions {
 	readonly liveIR: LiveIRState;
 	readonly getCurrentStatus: () => ConnectionStatus;
 	readonly computeDelta: boolean;
+	/**
+	 * I2 — retained-snapshot ceiling. `<= 0` disables the cap. See
+	 * {@link CreateYjsAdapterOptions.maxSnapshots}.
+	 */
+	readonly maxSnapshots: number;
 }
 
 /**
@@ -48,6 +53,14 @@ export interface SnapshotsModuleOptions {
  * degraded-decode fallback, and any legacy-shaped reader stay current
  * within a bounded staleness. The native tree itself is updated
  * incrementally every save and is the real source of truth.
+ *
+ * Accuracy note (I9): "incremental" here means the CRDT *delta* the
+ * native tree emits is small, and the remote *read* path
+ * (`live-ir.ts`) is incremental. The local `save()` CPU is NOT yet
+ * incremental — `encodeIR`/`hashIR`/`applyIRToNativeTree` still walk
+ * the whole IR per call (deferred review item I1). Snapshot storage is
+ * now bounded by {@link CreateYjsAdapterOptions.maxSnapshots} (I2).
+ * `pnpm bench:collab-highload` is the regression gate for both.
  */
 const BLOB_CHECKPOINT_MS = 5000;
 
@@ -93,6 +106,7 @@ export function createSnapshots(
 		liveIR,
 		getCurrentStatus,
 		computeDelta,
+		maxSnapshots,
 	} = options;
 	const subscribeListeners = new Set<(ir: PageIR, peer?: PeerInfo) => void>();
 	let lastLocalSavedAt: number | undefined;
@@ -169,6 +183,26 @@ export function createSnapshots(
 			doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
 				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
+				// I2 — bound the retained snapshot set. Every keystroke
+				// `save()` appended a full-document payload+meta to the
+				// shared Y.Doc with no pruning → O(saves × doc) growth
+				// (OOM, bloated sync; see the high-load report's 5.6 GB
+				// RSS). Evict the oldest payload+meta beyond the ceiling
+				// in this SAME transaction so the bound is a hard
+				// invariant of the CRDT, not a consumer responsibility.
+				// `forceResync`/cold-join keep working: the newest
+				// snapshot (and the native tree) are always retained;
+				// only ancient history is dropped. `<= 0` disables.
+				if (maxSnapshots > 0) {
+					const metas = readSnapshotMetas(map);
+					const overflow = metas.length - maxSnapshots;
+					for (let i = 0; i < overflow; i += 1) {
+						const victim = metas[i];
+						if (!victim) break;
+						map.delete(snapshotPayloadKey(victim.id));
+						map.delete(snapshotMetaKey(victim.id));
+					}
+				}
 				if (treeRoot) {
 					const applyStart = nowMs();
 					applyIRToNativeTree(treeRoot, ir, conflicts.getLastLocalIR());

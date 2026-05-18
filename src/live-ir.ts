@@ -29,6 +29,14 @@ import {
  *
  * The materialized IR is rebuilt fresh on every `get()` so callers that
  * retain it (`conflicts.setLastLocalIR`) never alias the cache.
+ *
+ * Accuracy note (I9): this makes the *remote read* path incremental
+ * (changed nodes only). It does NOT make the *local save* path
+ * incremental — `snapshots.save()` still re-encodes/walks the whole IR
+ * per keystroke (deferred review item I1). A `childIds` change is still
+ * (correctly) classified structural by `deriveChangedNodeIds`, forcing
+ * a full rebuild here; decoupling that is the deferred I3 perf work,
+ * not a correctness concern. `pnpm bench:collab-highload` gates both.
  */
 export interface LiveIRState {
 	/** Current materialized live IR, or `undefined` until seeded. */

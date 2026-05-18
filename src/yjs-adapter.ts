@@ -134,6 +134,7 @@ export function createYjsAdapter(
 		liveIR,
 		getCurrentStatus: () => connectionStatus.getStatus(),
 		computeDelta: options.computeDelta ?? false,
+		maxSnapshots: options.maxSnapshots ?? 200,
 	});
 	const awarenessBridge = createAwarenessBridge(
 		awareness,

@@ -68,6 +68,22 @@ export interface CreateYjsAdapterOptions {
 	 */
 	readonly computeDelta?: boolean;
 	/**
+	 * I2 — hard ceiling on retained snapshots in the shared `Y.Doc`.
+	 *
+	 * Every `save()` writes a full-document payload + meta; with no
+	 * pruning the CRDT grew unboundedly (OOM, bloated sync — see the
+	 * high-load report's 5.6 GB RSS). Once the retained count exceeds
+	 * this value the oldest payload+meta pairs are evicted in the SAME
+	 * transaction as the write, so the bound is a hard CRDT invariant
+	 * rather than a consumer responsibility. The newest snapshot and
+	 * the live native tree are always retained, so `forceResync` /
+	 * cold-join are unaffected — only ancient history is dropped. A
+	 * consuming version-history plugin's own `maxSnapshots` should be
+	 * ≤ this ceiling. Set `<= 0` to disable the cap (NOT recommended).
+	 * Default: `200`.
+	 */
+	readonly maxSnapshots?: number;
+	/**
 	 * Token-bucket rate-limit on outbound `presence.update` calls.
 	 * Local cursor/selection updates beyond the bucket are dropped
 	 * silently (no churn growth) until tokens replenish. Inbound

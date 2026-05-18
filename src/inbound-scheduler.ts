@@ -65,11 +65,46 @@ interface BufferedEntry {
 
 const DEFAULT_BUDGET_MS = 16;
 
+interface RacedHandle {
+	raf?: number;
+	timer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * I4 — when `requestAnimationFrame` exists, race it against a
+ * wall-clock `setTimeout`. Headless / backgrounded / occluded tabs
+ * park rAF indefinitely; without a failsafe the buffered remote IRs
+ * never flush and the collaborator silently stops receiving edits
+ * until the tab is refocused. The timeout guarantees the flush lands
+ * within `max(budgetMs, FAILSAFE_FLOOR_MS)` regardless of rAF state.
+ * Whichever fires first runs the callback exactly once and cancels the
+ * other; `cancel` clears both.
+ */
+const FAILSAFE_FLOOR_MS = 250;
+
 function defaultScheduler(budgetMs: number): InboundSchedulerHandleScheduler {
 	if (typeof requestAnimationFrame === "function") {
+		const failsafeMs = Math.max(budgetMs, FAILSAFE_FLOOR_MS);
 		return {
-			request: (cb) => requestAnimationFrame(cb),
-			cancel: (handle) => cancelAnimationFrame(handle as number),
+			request: (cb) => {
+				const handle: RacedHandle = {};
+				let fired = false;
+				const fire = () => {
+					if (fired) return;
+					fired = true;
+					if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
+					if (handle.timer !== undefined) clearTimeout(handle.timer);
+					cb();
+				};
+				handle.raf = requestAnimationFrame(fire);
+				handle.timer = setTimeout(fire, failsafeMs);
+				return handle;
+			},
+			cancel: (h) => {
+				const handle = h as RacedHandle;
+				if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
+				if (handle.timer !== undefined) clearTimeout(handle.timer);
+			},
 		};
 	}
 	return {
