@@ -13,6 +13,7 @@ import { Awareness } from "y-protocols/awareness";
 import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 import { createDebouncedAdapter } from "../debounced-adapter.js";
+import { createMetricsState } from "../metrics.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
@@ -212,6 +213,8 @@ describe("createYjsAdapter metrics()", () => {
 		applyUpdate(doc, update, otherPeer);
 
 		expect(adapter.metrics().degraded).toBe(true);
+		// A2 — the reason, not just the boolean, is surfaced for triage.
+		expect(adapter.metrics().degradedReasons).toContain("decode-failure");
 	});
 
 	// L7 — surfacing presence validation failures in metrics.
@@ -291,5 +294,33 @@ describe("createDebouncedAdapter metrics()", () => {
 		// the debouncer should still pass through the upstream samples.
 		expect(m.syncLatencySamples).toBe(adapter.metrics().syncLatencySamples);
 		expect(m.degraded).toBe(adapter.metrics().degraded);
+	});
+});
+
+describe("createMetricsState — A2 degradedReasons", () => {
+	it("is empty while healthy and captures, dedupes, and never clears reasons", () => {
+		const m = createMetricsState();
+		expect(m.snapshot().degraded).toBe(false);
+		expect(m.snapshot().degradedReasons).toEqual([]);
+
+		m.setDegraded(true, "cycle");
+		expect(m.snapshot().degradedReasons).toEqual(["cycle"]);
+
+		// A second distinct reason is appended; a duplicate is deduped.
+		m.setDegraded(true, "max-nodes");
+		m.setDegraded(true, "cycle");
+		expect([...m.snapshot().degradedReasons].sort()).toEqual([
+			"cycle",
+			"max-nodes",
+		]);
+
+		// Append-only audit trail: recovery clears the boolean but NOT
+		// the evidence of why it degraded.
+		m.setDegraded(false);
+		expect(m.snapshot().degraded).toBe(false);
+		expect([...m.snapshot().degradedReasons].sort()).toEqual([
+			"cycle",
+			"max-nodes",
+		]);
 	});
 });

@@ -60,11 +60,17 @@ describe("plugin-collab-yjs high-load smoke", () => {
 		for (let i = 1; i <= 50; i += 1) adapter.save(mutate(base, i), {});
 		const elapsed = performance.now() - start;
 		adapter.destroy();
-		// save() still does an O(document) encode+hash for the snapshot
-		// payload/pageIRHash by contract (H3 kept this; the incremental
-		// win is on the remote-read path). ~15-20ms/save for 2000 nodes
-		// is expected; 80ms/save (4000ms total) is a 4-5x blowup floor.
-		expect(elapsed).toBeLessThan(4000);
+		// I1/§3.1 — a non-structural save now applies ONLY the changed
+		// node to the native tree (O(changed)) instead of walking all
+		// 2000 (byte-identical: unchanged-node writeNode was a no-op).
+		// The residual per-save cost is the O(document) encode+hash for
+		// the snapshot payload/pageIRHash (kept by contract). Observed
+		// well under 10ms/save after the fix; the previous 80ms/save
+		// (full O(document) native-apply) is the regression this floor
+		// now catches. 1500ms total is ~4× headroom over the observed
+		// ~350ms while still failing loudly if the O(document)
+		// native-apply is reintroduced (~4000ms+).
+		expect(elapsed).toBeLessThan(1500);
 	});
 
 	it("applies 50 remote single-prop updates incrementally under budget", () => {
