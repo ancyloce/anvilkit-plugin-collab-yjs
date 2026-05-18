@@ -25,6 +25,7 @@ import { createSnapshots } from "./snapshots.js";
 import type {
 	CreateYjsAdapterOptions,
 	MetricsSnapshot,
+	RemoteChange,
 	YjsSnapshotAdapter,
 } from "./types.js";
 
@@ -142,11 +143,15 @@ export function createYjsAdapter(
 		options.awarenessRateLimit,
 	);
 
-	function dispatchRemote(remoteIR: PageIR, peer: PeerInfo | undefined): void {
+	function dispatchRemote(
+		remoteIR: PageIR,
+		peer: PeerInfo | undefined,
+		changed?: RemoteChange,
+	): void {
 		conflicts.maybeFire(remoteIR, peer);
 		conflicts.closeWindow();
 		conflicts.setLastLocalIR(remoteIR);
-		snapshots.emitToSubscribers(remoteIR, peer);
+		snapshots.emitToSubscribers(remoteIR, peer, changed);
 	}
 
 	// H3 — the native-tree deep observer is the PRIMARY remote-dispatch
@@ -178,7 +183,11 @@ export function createYjsAdapter(
 				);
 				metrics.recordTiming("nativeRead", nowMs() - readStart);
 				if (!remoteIR) return;
-				dispatchRemote(remoteIR, peer);
+				// Native-tree hot path: forward the change set the
+				// observer already computed so the plugin can apply a
+				// non-structural edit in O(changed) instead of
+				// re-deriving it in O(document).
+				dispatchRemote(remoteIR, peer, { ids, structural });
 			}
 		: undefined;
 	if (treeRoot && treeObserver) treeRoot.observeDeep(treeObserver);
