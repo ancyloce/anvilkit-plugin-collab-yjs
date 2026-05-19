@@ -5,7 +5,7 @@ import type {
 } from "@anvilkit/plugin-version-history";
 import type { Awareness } from "y-protocols/awareness";
 
-import type { MetricsState } from "./metrics.js";
+import { type MetricsState, nowMs } from "./metrics.js";
 import { validatePresenceState } from "./presence-schema.js";
 import type { AwarenessRateLimitOptions } from "./types.js";
 
@@ -55,12 +55,14 @@ export function createAwarenessBridge(
 		? Math.max(1, maxPerSecond)
 		: Infinity;
 	let tokens = bucketCapacity;
-	let lastRefillTs = Date.now();
+	// R5 — monotonic clock so a wall-clock step can't make the
+	// token-bucket refill negative (never refills) or huge.
+	let lastRefillTs = nowMs();
 	let droppedUpdates = 0;
 
 	function takeToken(): boolean {
 		if (!Number.isFinite(bucketCapacity)) return true;
-		const now = Date.now();
+		const now = nowMs();
 		const elapsed = now - lastRefillTs;
 		if (elapsed > 0) {
 			tokens = Math.min(

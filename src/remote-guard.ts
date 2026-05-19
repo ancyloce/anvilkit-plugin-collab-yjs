@@ -26,7 +26,14 @@
  * stays "active" until the outermost dispatch finishes. Tokens are
  * monotonic so a stale `end(token)` from a failed dispatch cannot
  * prematurely re-open the guard.
+ *
+ * R5 — the grace window is timed with the monotonic `nowMs()` clock,
+ * not `Date.now()`, so an NTP step / manual clock change can't make
+ * the window fire spuriously or never. Callers MUST pass `nowMs()`
+ * (not `Date.now()`) to `withinGraceWindow`.
  */
+import { nowMs } from "./metrics.js";
+
 export interface RemoteDispatchGuard {
 	/** Enter a remote dispatch. Returns a monotonic token for `end`. */
 	begin(): number;
@@ -99,7 +106,7 @@ export function createRemoteDispatchGuard(
 			depth -= 1;
 			if (depth <= 0) {
 				depth = 0;
-				closedAt = Date.now();
+				closedAt = nowMs();
 				lastDispatchSyncSuppress = syncSuppressInFlight;
 			}
 		},
