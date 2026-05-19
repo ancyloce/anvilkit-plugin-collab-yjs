@@ -1,4 +1,4 @@
-import type { PageIR } from "@anvilkit/core/types";
+import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 
 /**
  * Serialize a PageIR to a stable JSON string with sorted object keys.
@@ -44,6 +44,37 @@ export function hashIR(raw: string): string {
 	const high = h2 >>> 0;
 	const low = h1 >>> 0;
 	return high.toString(16).padStart(8, "0") + low.toString(16).padStart(8, "0");
+}
+
+/**
+ * P2 — stable hash of a single node's OWN content (type / slot /
+ * slotKind / props / assets / meta), excluding `children` (the child
+ * id list is compared exactly and cheaply by the caller). Cached per
+ * node in the live-IR state so `diffIRNodesForLocalSave` classifies a
+ * local save with ONE hash per next-node instead of stringifying
+ * props/assets/meta of every node on BOTH sides per keystroke.
+ *
+ * Deliberately uses RAW `JSON.stringify` (NOT the key-sorted encoding
+ * `pageIRHash` uses): it must be a faithful drop-in for the diff's
+ * `JSON.stringify(n.props) !== JSON.stringify(p.props)` comparison and
+ * for `reconcileProps`'s raw per-prop write decision, so the hash and
+ * stringify classifications are equivalent (a prop-key reorder counts
+ * as "changed" under both). It is a per-peer LOCAL change detector —
+ * never compared across replicas — so insertion-order sensitivity is
+ * correct here and does not affect cross-replica `pageIRHash`
+ * stability. Same non-crypto {@link hashIR} collision profile the
+ * codebase already relies on.
+ */
+export function hashNodeContent(node: PageIRNode): string {
+	const own = {
+		type: node.type,
+		slot: node.slot,
+		slotKind: node.slotKind,
+		props: node.props ?? {},
+		assets: node.assets ?? null,
+		meta: node.meta ?? null,
+	};
+	return hashIR(JSON.stringify(own));
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
