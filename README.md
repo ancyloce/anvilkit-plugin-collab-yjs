@@ -166,7 +166,70 @@ Redis-backed horizontal scale-out via
 [Hocuspocus](https://tiptap.dev/hocuspocus) — follow the recipe at
 [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
 
+## Performance characteristics
+
+Steady-state collaborative editing is optimised for large CMS pages.
+The costs that matter at scale, and where they stand:
+
+- **Remote edits (all peers) — incremental.** A remote prop edit
+  re-reads only the touched nodes. A **reorder / insert / delete**
+  (routine in a page builder) no longer forces every connected peer
+  to re-parse the whole document: the adapter emits a structured
+  *relink* delta and the live-IR cache relinks only the affected
+  parents + added nodes, reusing every untouched node's already-parsed
+  props. A genuine whole-document change (root id / version / assets /
+  metadata) or any ambiguous event still falls back to a full guarded
+  rebuild — the correctness backstop. The Puck-side dispatch for a
+  topology change stays the proven full `setData` (byte-identical to
+  prior behaviour); the win is removing the O(document) re-parse
+  fan-out across peers.
+
+- **Local `save()` — O(changed) apply, O(document) floor.** The Y.Doc
+  apply writes only changed/added nodes and deletes removed ones
+  (`applyChangedNodesToNativeTree`), byte-identical to a full apply.
+  Save-time classification is one content hash per next-node (cached
+  per-node in the live-IR state) instead of stringifying every node's
+  props/assets/meta twice. A residual O(document) cost per save is
+  inherent and **deferred (I1)**: `encodeIR(ir)` produces the snapshot
+  *payload* string that is stored every save, and hashing the next
+  side is itself O(document). `SnapshotMeta.pageIRHash` keeps its
+  `hashIR(encodeIR(ir))` definition — unchanged, so there is no
+  cross-version hash-format concern.
+
+- **Residual tail costs (deferred, gated by
+  `pnpm bench:collab-highload`).** These are acceptable at typical
+  sizes; the node/snapshot count at which each starts to matter:
+  - *Snapshot meta re-scan (P3)* — `readSnapshotMetas` re-parses every
+    retained snapshot meta on each `save()` (and `list()`/`load()`).
+    O(`maxSnapshots`, default 200) per keystroke.
+  - *Pending-index rebuild (P4)* — the dirty-field shield rebuilds the
+    pending-IR index per coalesced remote flush *while a local edit is
+    in flight*; O(document) only under interleaved remote bursts
+    during active typing.
+  - *Conflict overlap (P5)* — when an `onConflict` listener is
+    attached (the collab-ui default), overlap is computed over the
+    whole tree per remote flush within the `staleAfterMs` window.
+  - *Wide child lists (P6)* — `reconcileKeyedArray` is O(n²) for a
+    single parent with thousands of children undergoing many local
+    adds/reorders (long lists, table-like layouts); most nodes have
+    few children so this is a pathological-width tail.
+
+  Budget guidance: pages up to a few thousand nodes with the default
+  `maxSnapshots` stay comfortably within frame budget; `bench:collab-
+  highload` is the regression gate for all of the above.
+
 ## Phases and roadmap
+
+### Shipped — code-review repairs (2026-05-19)
+
+Addresses the `0.10.0-rc.1` static review: atomic IndexedDB `drain()`
+(R1), crash-safe append-then-delete offline compaction (R2), typed
+`SnapshotNotFoundError` / `SnapshotPrunedError` / `SnapshotCorrupted-
+Error` from `load()` (R3), a shared `puck-shapes` module with a
+compile-time Puck-drift assertion (A1), monotonic-clock correctness
+windows (R5), incremental structural relink for reorder/insert/delete
+(P1), and per-node content-hash save classification (P2). See the
+**Performance characteristics** section and CHANGELOG.
 
 ### Shipped — `0.10.0-rc.0` (2026-05-14)
 
@@ -203,9 +266,6 @@ CHANGELOG.
 
 ### Deferred
 
-- **Update compaction.** `Y.mergeUpdatesV2` on the IDB queue once it
-  exceeds N entries. Currently the queue accumulates until reconnect
-  drains it.
 - **Snapshot-level persistence.** Full state dump for fast tab
   bootstrap without replaying every update.
 - **Encryption at rest** for the IDB queue.
