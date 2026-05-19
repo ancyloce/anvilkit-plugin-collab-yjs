@@ -82,10 +82,12 @@ export async function createIndexedDbBackend(
 		async drain(): Promise<readonly Uint8Array[]> {
 			if (downgraded || !db) return [];
 			try {
-				const all = await readAll(db);
-				await runTransaction(db, "readwrite", (store) => {
-					store.clear();
-				});
+				// R1 — read and clear in ONE readwrite transaction via a
+				// cursor so the set returned is exactly the set deleted.
+				// The previous read-then-clear used two transactions; an
+				// append() landing between them was wiped by clear()
+				// without being returned (silent offline-edit loss).
+				const all = await drainAtomic(db);
 				cachedSize = 0;
 				return all;
 			} catch (error) {
@@ -104,6 +106,37 @@ export async function createIndexedDbBackend(
 					error instanceof Error ? error.message : "indexed-db-hydrate-failed",
 				);
 				return [];
+			}
+		},
+		async compact(
+			merge: (all: readonly Uint8Array[]) => Uint8Array | undefined,
+		): Promise<void> {
+			if (downgraded || !db) return;
+			try {
+				// R2 — append-then-delete-by-key, never drain-then-append.
+				// Snapshot the exact rows, fold them, COMMIT the merged
+				// blob, and only then delete the snapshotted source keys.
+				// A crash after the append commit but before the delete
+				// leaves merged + originals (a safe superset under
+				// commutative/idempotent applyUpdateV2), never an empty
+				// store. Rows appended concurrently have higher sequence
+				// keys and are outside the deleted set, so they survive.
+				const rows = await readAllWithKeys(db);
+				if (rows.length <= 1) return;
+				const merged = merge(rows.map((row) => row.payload));
+				if (merged === undefined) return;
+				await runTransaction(db, "readwrite", (store) => {
+					store.add({ payload: merged });
+				});
+				cachedSize += 1;
+				await runTransaction(db, "readwrite", (store) => {
+					for (const row of rows) store.delete(row.sequence);
+				});
+				cachedSize = Math.max(0, cachedSize - rows.length);
+			} catch (error) {
+				downgrade(
+					error instanceof Error ? error.message : "indexed-db-compact-failed",
+				);
 			}
 		},
 		size(): number {
@@ -186,5 +219,64 @@ function readAll(db: IDBDatabase): Promise<readonly Uint8Array[]> {
 			resolve(rows.map((row) => row.payload));
 		};
 		request.onerror = () => reject(request.error);
+	});
+}
+
+/**
+ * R2 — read every row WITH its `sequence` key (readonly), sorted by
+ * insertion order, so `compact()` can delete exactly the rows it
+ * folded and leave any concurrently-appended (higher-sequence) row
+ * untouched.
+ */
+function readAllWithKeys(
+	db: IDBDatabase,
+): Promise<readonly { sequence: number; payload: Uint8Array }[]> {
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(OBJECT_STORE_NAME, "readonly");
+		const request = tx.objectStore(OBJECT_STORE_NAME).getAll();
+		request.onsuccess = () => {
+			const rows = request.result as Array<{
+				sequence: number;
+				payload: Uint8Array;
+			}>;
+			rows.sort((left, right) => left.sequence - right.sequence);
+			resolve(rows);
+		};
+		request.onerror = () => reject(request.error);
+	});
+}
+
+/**
+ * R1 — atomic read-then-clear. Walks a cursor inside a single
+ * `readwrite` transaction, collecting each row's payload and deleting
+ * that row in the same transaction. The set resolved is therefore
+ * exactly the set removed: a concurrent `append()` either commits
+ * before this transaction (its row is read and deleted) or after it
+ * (its row survives untouched) — it can never be cleared without being
+ * returned. Resolves on `tx.oncomplete` so the durable delete is
+ * committed before the caller treats the queue as drained. Rows are
+ * keyed by the autoincrement `sequence`, so cursor order is insertion
+ * order; the explicit sort is a defensive backstop.
+ */
+function drainAtomic(db: IDBDatabase): Promise<readonly Uint8Array[]> {
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(OBJECT_STORE_NAME, "readwrite");
+		const rows: Array<{ sequence: number; payload: Uint8Array }> = [];
+		const request = tx.objectStore(OBJECT_STORE_NAME).openCursor();
+		request.onsuccess = () => {
+			const cursor = request.result;
+			if (cursor) {
+				rows.push(cursor.value as { sequence: number; payload: Uint8Array });
+				cursor.delete();
+				cursor.continue();
+			}
+		};
+		request.onerror = () => reject(request.error);
+		tx.onerror = () => reject(tx.error);
+		tx.onabort = () => reject(tx.error ?? new Error("indexed-db-tx-aborted"));
+		tx.oncomplete = () => {
+			rows.sort((left, right) => left.sequence - right.sequence);
+			resolve(rows.map((row) => row.payload));
+		};
 	});
 }
