@@ -8,6 +8,11 @@ import * as Y from "yjs";
 
 import type { ConflictModule } from "./conflicts.js";
 import { decodeIR, encodeIR, hashIR } from "./encode.js";
+import {
+	SnapshotCorruptedError,
+	SnapshotNotFoundError,
+	SnapshotPrunedError,
+} from "./snapshot-errors.js";
 import type { LiveIRState } from "./live-ir.js";
 import { nowMs } from "./metrics.js";
 import {
@@ -60,13 +65,20 @@ export interface SnapshotsModuleOptions {
  * within a bounded staleness. The native tree itself is updated
  * incrementally every save and is the real source of truth.
  *
- * Accuracy note (I9): "incremental" here means the CRDT *delta* the
- * native tree emits is small, and the remote *read* path
- * (`live-ir.ts`) is incremental. The local `save()` CPU is NOT yet
- * incremental — `encodeIR`/`hashIR`/`applyIRToNativeTree` still walk
- * the whole IR per call (deferred review item I1). Snapshot storage is
- * now bounded by {@link CreateYjsAdapterOptions.maxSnapshots} (I2).
- * `pnpm bench:collab-highload` is the regression gate for both.
+ * Accuracy note (I9 / P1 / P2): the remote *read* path (`live-ir.ts`)
+ * is incremental, including reorder/insert/delete (P1 relink — no
+ * whole-document re-parse fan-out). The Y.Doc *apply* is O(changed)
+ * (P1: `applyChangedNodesToNativeTree` for every non-first save), and
+ * the save-time *classification* is one content hash per next-node
+ * instead of stringifying every node twice (P2 — `diffIRNodesFor-
+ * LocalSave` consumes the live-IR per-node hash cache). The remaining
+ * O(document) floor per save is inherent: `encodeIR(ir)` produces the
+ * snapshot *payload* string that is stored every save, and the
+ * next-side hashing is itself O(document). Reducing that further
+ * needs Puck-side change tracking the plugin does not have from
+ * `onDataChange`; it stays deferred (I1) and gated by
+ * `pnpm bench:collab-highload`. Snapshot storage is bounded by
+ * {@link CreateYjsAdapterOptions.maxSnapshots} (I2).
  */
 const BLOB_CHECKPOINT_MS = 5000;
 
@@ -118,6 +130,19 @@ export function createSnapshots(
 	let lastLocalSavedAt: number | undefined;
 	let lastBlobCheckpointAt: number | undefined;
 	let queuedEdits = 0;
+	// R3 — ids this session evicted via the maxSnapshots cap, so a later
+	// load() of an id that is simply gone can be classified as "pruned
+	// by retention" rather than "never existed". Bounded (insertion-
+	// ordered Set, oldest dropped) so it can't grow without limit.
+	const prunedIds = new Set<string>();
+	const PRUNED_ID_MEMORY = 1024;
+	function rememberPruned(id: string): void {
+		prunedIds.add(id);
+		if (prunedIds.size > PRUNED_ID_MEMORY) {
+			const oldest = prunedIds.values().next().value;
+			if (oldest !== undefined) prunedIds.delete(oldest);
+		}
+	}
 
 	function readCurrentIR(): PageIR | undefined {
 		if (treeRoot) {
@@ -199,8 +224,12 @@ export function createSnapshots(
 			// no-op) but O(changed) instead of O(document). Structural
 			// saves (first save, topology change) keep the full apply.
 			const prevLocalIR = conflicts.getLastLocalIR();
+			// P2 — the live-IR cache holds the prev-side per-node content
+			// hashes (in sync with `prevLocalIR`), so the classification
+			// is one hash per next-node instead of stringifying every
+			// node twice per keystroke.
 			const localDiff = treeRoot
-				? diffIRNodesForLocalSave(prevLocalIR, ir)
+				? diffIRNodesForLocalSave(prevLocalIR, ir, liveIR.getNodeHashes())
 				: undefined;
 			doc.transact(() => {
 				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
@@ -223,6 +252,7 @@ export function createSnapshots(
 						if (!victim) break;
 						map.delete(snapshotPayloadKey(victim.id));
 						map.delete(snapshotMetaKey(victim.id));
+						rememberPruned(victim.id);
 					}
 				}
 				if (treeRoot) {
@@ -234,6 +264,7 @@ export function createSnapshots(
 							prevLocalIR,
 							localDiff.changed,
 							localDiff.baseline,
+							localDiff.removed,
 						);
 					} else {
 						applyIRToNativeTree(treeRoot, ir, prevLocalIR);
@@ -252,7 +283,7 @@ export function createSnapshots(
 			// whole tree just to learn current state (H3).
 			if (treeRoot) {
 				if (localDiff !== undefined && !localDiff.structural) {
-					liveIR.setLocalChanged(ir, localDiff.changed);
+					liveIR.setLocalChanged(ir, localDiff.changed, localDiff.removed);
 				} else {
 					liveIR.setLocal(ir);
 				}
@@ -269,20 +300,44 @@ export function createSnapshots(
 		load(id: string): PageIR {
 			const exists = readSnapshotMetas(map).some((meta) => meta.id === id);
 			if (!exists) {
-				throw new Error(
+				// Gone entirely. Retention deletes meta+payload in ONE Yjs
+				// transaction, so the deterministic pruned signal is the
+				// id being absent. `prunedIds` records evictions THIS
+				// session did, so a same-session/local history UI gets the
+				// precise `SnapshotPrunedError`. Cross-peer or post-reload
+				// the eviction is not observable from this replica — the
+				// id is simply unknown — so it surfaces as
+				// `SnapshotNotFoundError` (best-effort by design; the host
+				// can pre-filter against the retained `list()` to avoid
+				// requesting ids below the retention floor).
+				if (prunedIds.has(id)) {
+					throw new SnapshotPrunedError(
+						id,
+						`plugin-collab-yjs: snapshot "${id}" was pruned by the maxSnapshots retention cap`,
+					);
+				}
+				throw new SnapshotNotFoundError(
+					id,
 					`plugin-collab-yjs: no snapshot with id "${id}" in the shared Y.Doc`,
 				);
 			}
 			const irRaw = map.get(snapshotPayloadKey(id));
 			if (typeof irRaw !== "string") {
-				throw new Error(
-					`plugin-collab-yjs: snapshot metadata references id "${id}" but its payload is missing`,
+				// Meta present but payload missing. `load()` is synchronous
+				// and retention deletes meta+payload atomically in one
+				// transaction, so a concurrent prune cannot interleave
+				// between these two reads — this is an inconsistent /
+				// corrupt snapshot record, not a retention eviction.
+				throw new SnapshotCorruptedError(
+					id,
+					`plugin-collab-yjs: snapshot "${id}" metadata present but payload missing — inconsistent/corrupt record`,
 				);
 			}
 			try {
 				return decodeIR(irRaw);
 			} catch (error) {
-				throw new Error(
+				throw new SnapshotCorruptedError(
+					id,
 					`plugin-collab-yjs: failed to decode snapshot "${id}" — payload is corrupted or schema-drifted`,
 					{ cause: error },
 				);
