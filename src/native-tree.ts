@@ -1,6 +1,8 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import * as Y from "yjs";
 
+import { hashNodeContent } from "./encode.js";
+
 import {
 	NATIVE_ASSETS_KEY,
 	NATIVE_METADATA_KEY,
@@ -186,79 +188,107 @@ export function applyIRToNativeTree(
 }
 
 /**
- * I1/§3.1 — local-save IR diff. Classifies a save as either a pure
- * node-local prop patch (return `structural: false` + the exact set
- * of changed nodes) or a topology change (`structural: true`).
+ * I1/§3.1 + P1 — local-save IR diff. Classifies a save as either:
  *
- * "Structural" deliberately mirrors {@link deriveChangedNodeIds}: a
- * missing prior IR, a root-id change, an added/removed node, or any
- * parent's `childIds` reorder/membership change. Type / slot /
- * slotKind / props / assets / meta differences are node-local and
- * carried in `changed` (handled by `writeNode`'s baseline diff).
+ * - `structural: true` — no prior IR or a root-id change. The caller
+ *   must use the full {@link applyIRToNativeTree} (first save / new
+ *   document).
+ * - `structural: false` — everything else, including node add/remove
+ *   and `childIds` reorder/membership (P1: previously forced the full
+ *   apply). `changed` carries every node whose own fields, props,
+ *   assets, meta OR child-id list differ from `prev` plus every added
+ *   node; `removed` is every id in `prev` no longer present.
  *
- * For a non-structural save, `applyChangedNodesToNativeTree` writing
- * ONLY `changed` is byte-identical to `applyIRToNativeTree` writing
- * every node, because `writeNode(node, baseline)` on an unchanged
- * node produces zero Y.Doc mutations (every reconcile is a no-op).
+ * `applyChangedNodesToNativeTree(changed, removed)` is byte-identical
+ * to `applyIRToNativeTree(next, prev)`: `writeNode(node, prev[id])` on
+ * any node NOT in `changed` is a guaranteed no-op (equal scalars,
+ * `reconcileProps` writes nothing, `reconcileChildIds` early-returns
+ * on an unchanged list), and deleting `removed` reproduces the full
+ * apply's baseline sweep.
  */
 export function diffIRNodesForLocalSave(
 	prev: PageIR | undefined,
 	next: PageIR,
+	prevHashes?: ReadonlyMap<string, string>,
 ): {
 	structural: boolean;
 	changed: Map<string, PageIRNode>;
 	baseline: Map<string, PageIRNode>;
+	removed: Set<string>;
 } {
-	const empty = {
+	const structuralResult = {
 		structural: true,
 		changed: new Map<string, PageIRNode>(),
 		baseline: new Map<string, PageIRNode>(),
+		removed: new Set<string>(),
 	};
-	if (prev === undefined || prev.root.id !== next.root.id) return empty;
+	if (prev === undefined || prev.root.id !== next.root.id) {
+		return structuralResult;
+	}
 
 	const prevById = new Map<string, PageIRNode>();
 	walkNodes(prev.root, (n) => prevById.set(n.id, n));
 	const nextById = new Map<string, PageIRNode>();
 	walkNodes(next.root, (n) => nextById.set(n.id, n));
 
-	if (prevById.size !== nextById.size) return empty;
-	for (const id of nextById.keys()) {
-		if (!prevById.has(id)) return empty;
-	}
-
 	const changed = new Map<string, PageIRNode>();
 	const baseline = new Map<string, PageIRNode>();
+	const removed = new Set<string>();
+	for (const id of prevById.keys()) {
+		if (!nextById.has(id)) removed.add(id);
+	}
 	for (const [id, n] of nextById) {
 		const p = prevById.get(id);
-		if (p === undefined) return empty;
-		// Any parent relink (childIds reorder/membership) → structural.
+		if (p === undefined) {
+			// Added node — written fresh (no baseline entry, mirroring
+			// `applyIRToNativeTree`'s `baselineNodes.get(id) === undefined`).
+			changed.set(id, n);
+			continue;
+		}
+		// Parent relink (childIds reorder/membership) is now carried in
+		// `changed`, not escalated to a full rebuild (P1). Child id
+		// lists are short string arrays — compared exactly and cheaply.
 		const nKids = (n.children ?? []).map((c) => c.id);
 		const pKids = (p.children ?? []).map((c) => c.id);
-		if (nKids.length !== pKids.length) return empty;
-		for (let i = 0; i < nKids.length; i += 1) {
-			if (nKids[i] !== pKids[i]) return empty;
-		}
-		if (
-			n.type !== p.type ||
-			n.slot !== p.slot ||
-			n.slotKind !== p.slotKind ||
-			JSON.stringify(n.props ?? {}) !== JSON.stringify(p.props ?? {}) ||
-			JSON.stringify(n.assets ?? null) !== JSON.stringify(p.assets ?? null) ||
-			JSON.stringify(n.meta ?? null) !== JSON.stringify(p.meta ?? null)
-		) {
+		const kidsDiffer =
+			nKids.length !== pKids.length || nKids.some((k, i) => k !== pKids[i]);
+		// P2 — when the live-IR cache supplied the prev-side content
+		// hash, classify own-field changes with ONE hash of the next
+		// node vs the cached prev hash, instead of stringifying
+		// props/assets/meta of BOTH sides for every node every save.
+		// hashNodeContent covers exactly {type,slot,slotKind,props,
+		// assets,meta} so this is classification-equivalent to the
+		// stringify path (same determinism/collision profile as
+		// pageIRHash, which the codebase already relies on). Falls back
+		// to the exact stringify compare when no hash is available
+		// (first save, cache miss) so the result is never weaker.
+		const prevHash = prevHashes?.get(id);
+		const contentChanged =
+			prevHash !== undefined
+				? hashNodeContent(n) !== prevHash
+				: n.type !== p.type ||
+					n.slot !== p.slot ||
+					n.slotKind !== p.slotKind ||
+					JSON.stringify(n.props ?? {}) !== JSON.stringify(p.props ?? {}) ||
+					JSON.stringify(n.assets ?? null) !==
+						JSON.stringify(p.assets ?? null) ||
+					JSON.stringify(n.meta ?? null) !== JSON.stringify(p.meta ?? null);
+		if (kidsDiffer || contentChanged) {
 			changed.set(id, n);
 			baseline.set(id, p);
 		}
 	}
-	return { structural: false, changed, baseline };
+	return { structural: false, changed, baseline, removed };
 }
 
 /**
  * Incremental sibling of {@link applyIRToNativeTree}: writes only the
- * nodes in `changed` (plus conditional root version/assets/metadata).
- * Caller MUST gate on `!diffIRNodesForLocalSave(...).structural` so
- * the id-set and every parent's `childIds` are unchanged — there are
- * no node additions/removals to sweep and no relinks to apply.
+ * nodes in `changed`, deletes `removed`, and conditionally updates the
+ * root version/assets/metadata. Byte-identical to the full apply for
+ * any `!structural` {@link diffIRNodesForLocalSave} result (including
+ * P1 relinks — add / remove / reorder), because skipped nodes would
+ * have produced no Y.Doc mutation and the `removed` deletion
+ * reproduces the full apply's baseline sweep.
  */
 export function applyChangedNodesToNativeTree(
 	root: Y.Map<unknown>,
@@ -266,6 +296,7 @@ export function applyChangedNodesToNativeTree(
 	prevIR: PageIR | undefined,
 	changed: ReadonlyMap<string, PageIRNode>,
 	baseline: ReadonlyMap<string, PageIRNode>,
+	removed?: ReadonlySet<string>,
 ): void {
 	// Root-level writes use the EXACT conditions of the full
 	// `applyIRToNativeTree` (compare next vs the prior IR) so the
@@ -287,6 +318,9 @@ export function applyChangedNodesToNativeTree(
 		const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(id));
 		writeNode(nodeMap, node, baseline.get(id));
 	}
+	// P1 — reproduce the full apply's baseline sweep for relink saves
+	// that removed nodes.
+	if (removed) for (const id of removed) root.delete(nativeNodeKey(id));
 }
 
 export function readNativeTree(
@@ -311,41 +345,61 @@ export function readNativeTree(
 	} as PageIR;
 }
 
+/** P1 — topology delta; see {@link RelinkDelta} in `types.ts`. */
+export interface DerivedRelink {
+	addedIds: Set<string>;
+	removedIds: Set<string>;
+	parentsTouched: Set<string>;
+}
+
 /**
  * Map a batch of `Y.Map.observeDeep` events into the set of node ids
- * whose subtree changed, plus a `structural` flag that forces the
- * incremental live-IR cache to fall back to a full rebuild (H3).
+ * whose subtree changed (H3) plus a topology classification (P1).
  *
- * `structural` is set when the change cannot be applied as a pure
- * node-local prop patch: a `version`/`rootId` change, an `assets`/
- * `metadata` change, a `node:<id>` map added/removed at the root, or
- * any `childIds` reorder/membership change (which moves nodes between
- * parents).
+ * - `structural: true` — a whole-document change (`version`/`rootId`/
+ *   `assets`/`metadata`) or anything ambiguous. The live-IR cache
+ *   must fall back to a full guarded `readNativeTree`.
+ * - `relink` present (and `structural: false`) — a `node:<id>` map
+ *   added/removed at the root and/or a `childIds` reorder/membership
+ *   change. The cache relinks only the affected subtrees: it re-reads
+ *   the added/parent nodes' shallow fields and re-materializes from
+ *   the cached (already-parsed) props of every untouched node,
+ *   instead of re-`JSON.parse`-ing the whole document on every peer.
+ * - neither — a pure node-local prop patch (existing fast path).
  */
 export function deriveChangedNodeIds(
 	events: readonly Y.YEvent<Y.AbstractType<unknown>>[],
 ): {
 	ids: Set<string>;
 	structural: boolean;
+	relink?: DerivedRelink;
 } {
 	const ids = new Set<string>();
+	const addedIds = new Set<string>();
+	const removedIds = new Set<string>();
+	const parentsTouched = new Set<string>();
 	let structural = false;
 	for (const event of events) {
 		const path = event.path;
 		if (path.length === 0) {
 			// Event on the tree root map itself.
-			for (const key of event.changes.keys.keys()) {
+			for (const [key, change] of event.changes.keys) {
 				if (
 					key === NATIVE_VERSION_KEY ||
 					key === NATIVE_ROOT_ID_KEY ||
 					key === NATIVE_ASSETS_KEY ||
 					key === NATIVE_METADATA_KEY
 				) {
+					// Whole-document change — genuine full rebuild.
 					structural = true;
 				} else if (key.startsWith(NATIVE_NODE_PREFIX)) {
-					// A whole node Y.Map was added or removed.
-					structural = true;
-					ids.add(key.slice(NATIVE_NODE_PREFIX.length));
+					// A whole node Y.Map was added or removed at the root.
+					// Recorded as a relink (re-read just this node /
+					// drop it) rather than a full re-parse of every node.
+					const id = key.slice(NATIVE_NODE_PREFIX.length);
+					ids.add(id);
+					if (change.action === "delete") removedIds.add(id);
+					else addedIds.add(id);
 				}
 			}
 			continue;
@@ -354,12 +408,23 @@ export function deriveChangedNodeIds(
 		if (typeof first !== "string" || !first.startsWith(NATIVE_NODE_PREFIX)) {
 			continue;
 		}
-		ids.add(first.slice(NATIVE_NODE_PREFIX.length));
-		// A childIds reorder/membership change relinks the tree, so a
-		// node-local patch is insufficient — force a full rebuild.
-		if (path.includes("childIds")) structural = true;
+		const ownerId = first.slice(NATIVE_NODE_PREFIX.length);
+		ids.add(ownerId);
+		// A `childIds` reorder/membership change relinks the tree. The
+		// cache re-reads just this parent's child id list and rebuilds
+		// from cached node props — no whole-document re-parse.
+		if (path.includes("childIds")) parentsTouched.add(ownerId);
 	}
-	return { ids, structural };
+	const hasRelink =
+		addedIds.size > 0 || removedIds.size > 0 || parentsTouched.size > 0;
+	if (structural || !hasRelink) {
+		return { ids, structural };
+	}
+	return {
+		ids,
+		structural: false,
+		relink: { addedIds, removedIds, parentsTouched },
+	};
 }
 
 function writeNode(
