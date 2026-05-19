@@ -393,21 +393,46 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
  * against hostile or buggy peers — every transport is treated as untrusted.
  */
 /**
- * Set of node ids touched by a single inbound remote update, plus a
- * `structural` flag set when the change altered document shape
- * (root/version/assets/metadata, node add/remove, childIds reorder)
- * rather than only node props.
+ * P1 — a topology change that is NOT a whole-document rebuild: nodes
+ * added/removed at the tree root and/or parents whose `childIds` were
+ * reordered or had membership change. The live-IR cache uses this to
+ * relink only the affected subtrees instead of re-parsing every node
+ * (the old binary `structural` flag forced a full `readNativeTree`
+ * re-parse — re-`JSON.parse` of every prop of every node — on every
+ * connected peer for a routine drag-reorder).
+ */
+export interface RelinkDelta {
+	/** Node ids whose `node:<id>` map was newly added at the root. */
+	readonly addedIds: ReadonlySet<string>;
+	/** Node ids whose `node:<id>` map was removed at the root. */
+	readonly removedIds: ReadonlySet<string>;
+	/** Node ids whose `childIds` order/membership changed. */
+	readonly parentsTouched: ReadonlySet<string>;
+}
+
+/**
+ * Set of node ids touched by a single inbound remote update.
+ *
+ * `structural` now means strictly "a full rebuild is required" —
+ * reserved for whole-document changes (root id / version / assets /
+ * metadata) and any case the incremental relink cannot prove. A
+ * reorder / insert / delete instead reports `structural: false` plus a
+ * {@link RelinkDelta} so the live-IR cache relinks only affected
+ * subtrees (P1). When `relink` is present the plugin still takes its
+ * proven full `irToPuckData` + `setData` dispatch path (a topology
+ * change is not a scoped `replace`), so Puck-side output is byte-
+ * identical to before — the win is removing the O(document) re-parse
+ * fan-out across peers.
  *
  * Computed once by the adapter's `deriveChangedNodeIds` and threaded
- * through `subscribe` → scheduler → `dispatchRemoteIR` so the plugin
- * can apply a non-structural edit in O(changed) instead of re-deriving
- * it in O(document). Always optional: when absent (legacy adapters,
- * JSON-blob mode, hydration) the plugin keeps its existing
- * O(document) full-diff path.
+ * through `subscribe` → scheduler → `dispatchRemoteIR`. Always
+ * optional: when absent (legacy adapters, JSON-blob mode, hydration)
+ * the plugin keeps its existing O(document) full-diff path.
  */
 export interface RemoteChange {
 	readonly ids: ReadonlySet<string>;
 	readonly structural: boolean;
+	readonly relink?: RelinkDelta;
 }
 
 /**
