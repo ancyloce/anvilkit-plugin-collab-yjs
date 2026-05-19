@@ -202,8 +202,10 @@ export function createYjsAdapter(
 				transaction: Y.Transaction,
 			) => {
 				if (isLocalOrigin(transaction.origin, localPeer)) return;
-				const { ids, structural } = deriveChangedNodeIds(events);
-				if (ids.size === 0 && !structural) return;
+				const { ids, structural, relink } = deriveChangedNodeIds(events);
+				if (ids.size === 0 && !structural && relink === undefined) {
+					return;
+				}
 				const savedAt = snapshots.getLastLocalSavedAt();
 				if (savedAt !== undefined) metrics.recordObservationLatency(savedAt);
 				// LAST_PEER_KEY is written by every save in the same
@@ -215,14 +217,17 @@ export function createYjsAdapter(
 					treeRoot,
 					ids,
 					structural,
+					relink,
 				);
 				metrics.recordTiming("nativeRead", nowMs() - readStart);
 				if (!remoteIR) return;
 				// Native-tree hot path: forward the change set the
 				// observer already computed so the plugin can apply a
 				// non-structural edit in O(changed) instead of
-				// re-deriving it in O(document).
-				dispatchRemote(remoteIR, peer, { ids, structural });
+				// re-deriving it in O(document). `relink` (P1) lets the
+				// plugin keep its proven full dispatch for a topology
+				// change while the cache above stayed incremental.
+				dispatchRemote(remoteIR, peer, { ids, structural, relink });
 			}
 		: undefined;
 	if (treeRoot && treeObserver) treeRoot.observeDeep(treeObserver);
