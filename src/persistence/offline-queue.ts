@@ -67,18 +67,16 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 		if (compacting || destroyed || !Number.isFinite(compactEvery)) return;
 		compacting = true;
 		try {
-			const backend = input.getBackend();
-			// drain() atomically clears the store; updates appended
-			// concurrently land as fresh rows. Yjs updates are
-			// commutative under applyUpdateV2, so re-appending the merged
-			// blob alongside them stays correct — this only bounds count.
-			const all = await backend.drain();
-			if (all.length <= 1) {
-				if (all[0]) await backend.append(all[0]);
-				return;
-			}
-			const merged = Y.mergeUpdatesV2(all.map((u) => u));
-			await backend.append(merged);
+			// R2 — crash-safe: the backend appends the merged blob and
+			// only then deletes the source rows (append-then-delete). A
+			// crash mid-compaction leaves merged + originals (a safe
+			// superset under commutative/idempotent applyUpdateV2), never
+			// the empty store the old drain()-then-append() risked.
+			await input
+				.getBackend()
+				.compact((all) =>
+					all.length > 1 ? Y.mergeUpdatesV2(all.map((u) => u)) : all[0],
+				);
 		} catch {
 			// Best-effort: a fault downgrades the backend to NullBackend
 			// internally; losing the compaction pass is non-fatal.
