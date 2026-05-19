@@ -160,7 +160,7 @@ describe("real adapter threads { ids, structural } through subscribe", () => {
 		expect([...(last as RemoteChange).ids]).toEqual(["hero-1"]);
 	});
 
-	it("flags structural=true when a node is added", () => {
+	it("P1 — a node add is a non-structural relink (not a full rebuild)", () => {
 		const { docA, docB } = pairDocs();
 		const adapterA = createYjsAdapter({ doc: docA, peer: { id: "alice" } });
 		const adapterB = createYjsAdapter({ doc: docB, peer: { id: "bob" } });
@@ -171,7 +171,14 @@ describe("real adapter threads { ids, structural } through subscribe", () => {
 		adapterB.save(multiHero(["a", "b"]), {});
 		adapterB.save(multiHero(["a", "b"], { id: "hero-new", text: "n" }), {});
 
-		expect(seen.at(-1)?.structural).toBe(true);
+		const last = seen.at(-1) as RemoteChange;
+		expect(last.structural).toBe(false);
+		expect(last.relink).toBeDefined();
+		const relink = last.relink as NonNullable<RemoteChange["relink"]>;
+		expect([...relink.addedIds]).toContain("hero-new");
+		// The parent whose childIds gained the node is relinked too.
+		expect(relink.parentsTouched.size).toBeGreaterThan(0);
+		expect([...last.ids]).toContain("hero-new");
 	});
 });
 

@@ -63,6 +63,42 @@ describe("createLiveIRState (H3)", () => {
 		expect(incremental).toEqual(v2);
 	});
 
+	it("P1 — relink (reorder/add/remove) matches a full rebuild without re-parsing untouched nodes", () => {
+		const doc = new Y.Doc();
+		const tree = doc.getMap<unknown>("t");
+		const v1 = ir([
+			{ id: "n1", title: "one" },
+			{ id: "n2", title: "two" },
+			{ id: "n3", title: "three" },
+		]);
+		applyIRToNativeTree(tree, v1, undefined);
+		const live = createLiveIRState();
+		live.applyRemoteChangedNodes(tree, new Set(), true); // seed
+
+		// Reorder + add + remove in one step: [n1,n2,n3] → [n3,n1,n4]
+		const v2 = ir([
+			{ id: "n3", title: "three" },
+			{ id: "n1", title: "one" },
+			{ id: "n4", title: "four" },
+		]);
+		applyIRToNativeTree(tree, v2, v1);
+
+		// Adapter-derived relink for this edit: root's childIds changed,
+		// n4 added at root, n2 removed at root.
+		const out = live.applyRemoteChangedNodes(
+			tree,
+			new Set(["root", "n4", "n2"]),
+			false,
+			{
+				addedIds: new Set(["n4"]),
+				removedIds: new Set(["n2"]),
+				parentsTouched: new Set(["root"]),
+			},
+		);
+		expect(out).toEqual(readNativeTree(tree));
+		expect(out).toEqual(v2);
+	});
+
 	it("falls back to a full rebuild on a structural change", () => {
 		const doc = new Y.Doc();
 		const tree = doc.getMap<unknown>("t");

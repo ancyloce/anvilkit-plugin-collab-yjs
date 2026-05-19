@@ -1,18 +1,21 @@
 /**
  * Stage 4a / I1 §3.1 — incremental local save.
  *
- * `diffIRNodesForLocalSave` must classify topology changes as
- * `structural` (→ full `applyIRToNativeTree`) and pure prop edits as
- * non-structural (→ O(changed) `applyChangedNodesToNativeTree`). The
- * incremental path must be byte-equivalent: a remote peer replicating
- * the Y.Doc must read back exactly the locally-saved IR after a mix
- * of non-structural and structural saves.
+ * `diffIRNodesForLocalSave` classifies `structural: true` ONLY for a
+ * missing prior IR / root-id change (full `applyIRToNativeTree`).
+ * Everything else — pure prop edits AND P1 relinks (node add/remove,
+ * childIds reorder/membership) — is non-structural and carried in
+ * `changed` + `removed`, applied O(changed) via
+ * `applyChangedNodesToNativeTree`. The incremental path must be
+ * byte-equivalent: a remote peer replicating the Y.Doc must read back
+ * exactly the locally-saved IR after a mix of saves.
  */
 
 import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
+import { hashNodeContent } from "../encode.js";
 import { diffIRNodesForLocalSave } from "../native-tree.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
@@ -42,20 +45,62 @@ describe("diffIRNodesForLocalSave — classification", () => {
 		expect(d.baseline.get("b")?.props).toEqual({ t: "0" });
 	});
 
-	it("adding or removing a node is structural", () => {
+	it("P1 — adding a node is a non-structural relink (added node + parent in changed)", () => {
 		const prev = doc([n("a", "0")]);
-		expect(
-			diffIRNodesForLocalSave(prev, doc([n("a", "0"), n("b", "0")])).structural,
-		).toBe(true);
-		expect(
-			diffIRNodesForLocalSave(doc([n("a", "0"), n("b", "0")]), prev).structural,
-		).toBe(true);
+		const d = diffIRNodesForLocalSave(prev, doc([n("a", "0"), n("b", "0")]));
+		expect(d.structural).toBe(false);
+		// Parent relinked (childIds gained "b") + the new node itself.
+		expect(new Set(d.changed.keys())).toEqual(new Set(["root", "b"]));
+		expect(d.removed.size).toBe(0);
+		// Added node has no baseline (written fresh, like the full apply).
+		expect(d.baseline.has("b")).toBe(false);
 	});
 
-	it("reordering children (childIds membership/order) is structural", () => {
+	it("P1 — removing a node is a non-structural relink (removed set + parent in changed)", () => {
+		const prev = doc([n("a", "0"), n("b", "0")]);
+		const d = diffIRNodesForLocalSave(prev, doc([n("a", "0")]));
+		expect(d.structural).toBe(false);
+		expect([...d.removed]).toEqual(["b"]);
+		expect(d.changed.has("root")).toBe(true); // parent childIds shrank
+	});
+
+	it("P1 — reordering children is a non-structural relink (parent in changed)", () => {
 		const prev = doc([n("a", "0"), n("b", "0")]);
 		const next = doc([n("b", "0"), n("a", "0")]);
-		expect(diffIRNodesForLocalSave(prev, next).structural).toBe(true);
+		const d = diffIRNodesForLocalSave(prev, next);
+		expect(d.structural).toBe(false);
+		expect(d.changed.has("root")).toBe(true);
+		expect(d.removed.size).toBe(0);
+		// Leaf nodes unchanged — only the parent's childIds reordered.
+		expect(d.changed.has("a")).toBe(false);
+		expect(d.changed.has("b")).toBe(false);
+	});
+
+	it("P2 — the prev-hash fast path classifies identically to the stringify path", () => {
+		const prev = doc([
+			{ id: "a", type: "Hero", props: { t: "0" } },
+			{ id: "b", type: "Hero", props: { t: "0" } },
+			{ id: "c", type: "Hero", props: { t: "0" } },
+		]);
+		// Edit b's props, change c's type, reorder, drop nothing.
+		const next = doc([
+			{ id: "a", type: "Hero", props: { t: "0" } },
+			{ id: "c", type: "Banner", props: { t: "0" } },
+			{ id: "b", type: "Hero", props: { t: "9" } },
+		]);
+		// Build the prev-side hash map exactly as the live-IR cache would.
+		const prevHashes = new Map<string, string>();
+		const walk = (n: PageIR["root"]): void => {
+			prevHashes.set(n.id, hashNodeContent(n));
+			for (const k of n.children ?? []) walk(k);
+		};
+		walk(prev.root);
+
+		const slow = diffIRNodesForLocalSave(prev, next);
+		const fast = diffIRNodesForLocalSave(prev, next, prevHashes);
+		expect(new Set(fast.changed.keys())).toEqual(new Set(slow.changed.keys()));
+		expect([...fast.removed]).toEqual([...slow.removed]);
+		expect(fast.structural).toBe(slow.structural);
 	});
 
 	it("a type change is non-structural (node-local, via writeNode)", () => {
@@ -84,9 +129,9 @@ describe("incremental local save — replicated peer convergence", () => {
 		// 2) non-structural prop edits (incremental path)
 		a.save(doc([n("x", "1"), n("y", "0"), n("z", "0")]), {});
 		a.save(doc([n("x", "1"), n("y", "2"), n("z", "0")]), {});
-		// 3) structural: remove a node (full-apply fallback)
+		// 3) P1 relink: remove a node (incremental, byte-equivalent)
 		a.save(doc([n("x", "1"), n("z", "0")]), {});
-		// 4) non-structural again after the structural change
+		// 4) pure prop edit again after the relink
 		a.save(doc([n("x", "9"), n("z", "0")]), {});
 
 		const latest = seen.at(-1);

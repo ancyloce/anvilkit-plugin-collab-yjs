@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { nowMs } from "../metrics.js";
 import { createRemoteDispatchGuard } from "../remote-guard.js";
 
 describe("createRemoteDispatchGuard (H2)", () => {
@@ -33,17 +34,19 @@ describe("createRemoteDispatchGuard (H2)", () => {
 	it("default grace is 0 — a local edit the instant after dispatch is NOT suppressed", () => {
 		const g = createRemoteDispatchGuard();
 		const t = g.begin();
-		expect(g.withinGraceWindow(Date.now())).toBe(true);
+		// R5 — callers pass the monotonic nowMs() (same clock the guard
+		// times closedAt with), not Date.now().
+		expect(g.withinGraceWindow(nowMs())).toBe(true);
 		g.end(t);
-		// Same millisecond, dispatch closed: not suppressed.
-		expect(g.withinGraceWindow(Date.now())).toBe(false);
+		// Same tick, dispatch closed: not suppressed.
+		expect(g.withinGraceWindow(nowMs())).toBe(false);
 	});
 
 	it("honors a positive grace window when configured", () => {
 		const g = createRemoteDispatchGuard({ graceMs: 1000 });
 		const t = g.begin();
 		g.end(t);
-		const now = Date.now();
+		const now = nowMs();
 		expect(g.withinGraceWindow(now)).toBe(true);
 		expect(g.withinGraceWindow(now + 2000)).toBe(false);
 	});

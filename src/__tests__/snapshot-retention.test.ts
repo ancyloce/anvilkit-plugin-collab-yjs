@@ -11,6 +11,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
+import { SnapshotPrunedError } from "../snapshot-errors.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 function irWith(label: string): PageIR {
@@ -30,9 +31,11 @@ describe("snapshot retention cap (I2)", () => {
 		// Newest 3 retained, in order.
 		expect(list.map((m) => m.label)).toEqual(["v4", "v5", "v6"]);
 
-		// Oldest 4 evicted — payload gone, load throws.
+		// Oldest 4 evicted — payload gone. R3: load() now throws a
+		// typed SnapshotPrunedError (distinct from not-found/corruption)
+		// so a history UI can degrade to "pruned by retention".
 		for (let i = 0; i < 4; i += 1) {
-			expect(() => adapter.load(ids[i] as string)).toThrow(/no snapshot/i);
+			expect(() => adapter.load(ids[i] as string)).toThrow(SnapshotPrunedError);
 		}
 		// Newest 3 still load their exact payloads.
 		for (let i = 4; i < 7; i += 1) {

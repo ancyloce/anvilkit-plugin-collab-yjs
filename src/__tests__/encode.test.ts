@@ -11,7 +11,7 @@ import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 
-import { decodeIR, encodeIR, hashIR } from "../encode.js";
+import { decodeIR, encodeIR, hashIR, hashNodeContent } from "../encode.js";
 
 describe("encodeIR", () => {
 	it("round-trips a PageIR losslessly", () => {
@@ -128,5 +128,50 @@ describe("hashIR", () => {
 	it("handles empty input without throwing", () => {
 		expect(() => hashIR("")).not.toThrow();
 		expect(hashIR("")).toMatch(/^[0-9a-f]{16}$/);
+	});
+});
+
+describe("hashNodeContent (P2)", () => {
+	const node = (over: Record<string, unknown> = {}) =>
+		({
+			id: "n1",
+			type: "Hero",
+			props: { a: 1, b: 2 },
+			...over,
+		}) as never;
+
+	it("is deterministic for an equal node", () => {
+		expect(hashNodeContent(node())).toBe(hashNodeContent(node()));
+	});
+
+	it("is prop-key-order SENSITIVE (faithful to the raw-stringify diff/write path)", () => {
+		// Equivalence with `JSON.stringify(n.props) !== JSON.stringify(p.props)`
+		// and reconcileProps' raw per-prop compare requires order
+		// sensitivity. The IR is produced deterministically per peer, so
+		// an unchanged node yields a stable key order; this is a local
+		// change detector, never compared across replicas.
+		expect(hashNodeContent(node({ props: { a: 1, b: 2 } }))).not.toBe(
+			hashNodeContent(node({ props: { b: 2, a: 1 } })),
+		);
+	});
+
+	it("excludes children (childIds are compared separately)", () => {
+		const a = node();
+		const b = node({ children: [{ id: "c", type: "X", props: {} }] });
+		expect(hashNodeContent(a)).toBe(hashNodeContent(b));
+	});
+
+	it("changes on any own-field edit (type/slot/slotKind/props/assets/meta)", () => {
+		const base = hashNodeContent(node());
+		expect(hashNodeContent(node({ type: "Banner" }))).not.toBe(base);
+		expect(hashNodeContent(node({ slot: "main" }))).not.toBe(base);
+		expect(hashNodeContent(node({ slotKind: "zone" }))).not.toBe(base);
+		expect(hashNodeContent(node({ props: { a: 1, b: 3 } }))).not.toBe(base);
+		expect(hashNodeContent(node({ assets: ["x"] }))).not.toBe(base);
+		expect(hashNodeContent(node({ meta: { k: 1 } }))).not.toBe(base);
+	});
+
+	it("returns the same 16-hex shape as hashIR", () => {
+		expect(hashNodeContent(node())).toMatch(/^[0-9a-f]{16}$/);
 	});
 });
