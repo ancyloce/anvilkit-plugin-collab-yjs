@@ -1,12 +1,15 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type * as Y from "yjs";
 
+import { hashNodeContent } from "./encode.js";
+
 import {
 	NATIVE_ASSETS_KEY,
 	NATIVE_METADATA_KEY,
 	NATIVE_ROOT_ID_KEY,
 } from "./keys.js";
 import {
+	type DerivedRelink,
 	type ReadGuardTrip,
 	readNativeTree,
 	readNodeShallow,
@@ -30,13 +33,15 @@ import {
  * The materialized IR is rebuilt fresh on every `get()` so callers that
  * retain it (`conflicts.setLastLocalIR`) never alias the cache.
  *
- * Accuracy note (I9): this makes the *remote read* path incremental
- * (changed nodes only). It does NOT make the *local save* path
- * incremental — `snapshots.save()` still re-encodes/walks the whole IR
- * per keystroke (deferred review item I1). A `childIds` change is still
- * (correctly) classified structural by `deriveChangedNodeIds`, forcing
- * a full rebuild here; decoupling that is the deferred I3 perf work,
- * not a correctness concern. `pnpm bench:collab-highload` gates both.
+ * P1 (formerly deferred I3): a `childIds` reorder / node add / node
+ * remove no longer forces a full `readNativeTree` re-parse. The
+ * adapter classifies it as a {@link DerivedRelink} and the cache
+ * re-reads only the affected parents + added nodes (shallow) and
+ * relinks the tree from already-parsed props. Only a genuine whole-
+ * document change (root id / version / assets / metadata) or an
+ * ambiguous event still falls back to the full guarded rebuild —
+ * which remains the correctness backstop. `pnpm bench:collab-highload`
+ * gates it.
  */
 export interface LiveIRState {
 	/** Current materialized live IR, or `undefined` until seeded. */
@@ -55,7 +60,11 @@ export interface LiveIRState {
 	 * materialized result is identical to `setLocal(ir)`. Falls back
 	 * to a full seed if the cache was never seeded.
 	 */
-	setLocalChanged(ir: PageIR, changed: ReadonlyMap<string, PageIRNode>): void;
+	setLocalChanged(
+		ir: PageIR,
+		changed: ReadonlyMap<string, PageIRNode>,
+		removed?: ReadonlySet<string>,
+	): void;
 	/**
 	 * Seed/replace the cache from a decoded legacy `PAGE_IR_KEY` blob
 	 * (old/legacy-mode peers, hydration, force-resync).
@@ -70,12 +79,22 @@ export interface LiveIRState {
 		treeRoot: Y.Map<unknown>,
 		ids: ReadonlySet<string>,
 		structural: boolean,
+		relink?: DerivedRelink,
 	): PageIR | undefined;
+	/**
+	 * P2 — current per-node content hashes (id → hash) of the cached
+	 * (last-saved/converged) tree. `diffIRNodesForLocalSave` uses these
+	 * as the prev-side baseline so a local save is classified with one
+	 * hash per next-node instead of re-stringifying every node twice.
+	 */
+	getNodeHashes(): ReadonlyMap<string, string>;
 }
 
 interface CachedNode {
 	node: Record<string, unknown>;
 	childIds: readonly string[];
+	/** P2 — content hash of this node's own fields (see encode.ts). */
+	hash: string;
 }
 
 export interface LiveIROptions {
@@ -103,6 +122,7 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 			cache.set(node.id, {
 				node: { ...own },
 				childIds: children ? children.map((c) => c.id) : [],
+				hash: hashNodeContent(node),
 			});
 			if (children) for (const c of children) stack.push(c);
 		}
@@ -152,7 +172,7 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 	return {
 		get: materialize,
 		setLocal: seedFromIR,
-		setLocalChanged(ir, changed): void {
+		setLocalChanged(ir, changed, removed): void {
 			if (!seeded) {
 				seedFromIR(ir);
 				return;
@@ -160,21 +180,48 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 			rootId = ir.root.id;
 			assets = ir.assets;
 			metadata = ir.metadata;
+			// P1 — `changed` carries relinked parents (new childIds) and
+			// added nodes too, so updating those entries plus dropping
+			// `removed` keeps the materialized tree identical to a full
+			// `setLocal(ir)` for a relink local save.
+			if (removed) for (const id of removed) cache.delete(id);
 			for (const [id, node] of changed) {
 				const { children, ...own } = node;
 				cache.set(id, {
 					node: { ...own },
 					childIds: children ? children.map((c) => c.id) : [],
+					hash: hashNodeContent(node),
 				});
 			}
 		},
 		applyRemoteFullBlob: seedFromIR,
-		applyRemoteChangedNodes(treeRoot, ids, structural): PageIR | undefined {
+		applyRemoteChangedNodes(
+			treeRoot,
+			ids,
+			structural,
+			relink,
+		): PageIR | undefined {
 			if (structural || !seeded) {
 				return fullRebuild(treeRoot);
 			}
 			readRootMeta(treeRoot);
-			for (const id of ids) {
+			// P1 — re-read the changed nodes plus, for a relink, every
+			// parent whose `childIds` shifted and every newly added
+			// node. Removed nodes are dropped from the cache. Untouched
+			// nodes keep their already-parsed props (never re-
+			// `JSON.parse`d) and `materialize()` rebuilds the tree from
+			// the relinked child id lists.
+			const removed = relink?.removedIds;
+			const toRead = new Set<string>(ids);
+			if (relink) {
+				for (const id of relink.parentsTouched) toRead.add(id);
+				for (const id of relink.addedIds) toRead.add(id);
+			}
+			for (const id of toRead) {
+				if (removed?.has(id)) {
+					cache.delete(id);
+					continue;
+				}
 				const shallow = readNodeShallow(treeRoot, id);
 				if (!shallow) {
 					// A changed node vanished or is unreadable under a
@@ -186,9 +233,16 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 				cache.set(id, {
 					node: shallow.node,
 					childIds: shallow.childIds,
+					hash: hashNodeContent(shallow.node as unknown as PageIRNode),
 				});
 			}
+			if (removed) for (const id of removed) cache.delete(id);
 			return materialize();
+		},
+		getNodeHashes(): ReadonlyMap<string, string> {
+			const out = new Map<string, string>();
+			for (const [id, c] of cache) out.set(id, c.hash);
+			return out;
 		},
 	};
 }
