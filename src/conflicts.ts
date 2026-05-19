@@ -1,6 +1,7 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type { PeerInfo, Unsubscribe } from "@anvilkit/plugin-version-history";
 
+import { nowMs } from "./metrics.js";
 import type { ConflictEvent } from "./types.js";
 
 export interface ConflictModule {
@@ -55,7 +56,9 @@ export function createConflicts(
 		) {
 			return;
 		}
-		const elapsed = Date.now() - firstUnconfirmedLocalSaveAt;
+		// R5 — monotonic: staleness is a correctness window, not a
+		// display value, so a wall-clock step must not skew it.
+		const elapsed = nowMs() - firstUnconfirmedLocalSaveAt;
 		if (elapsed > staleAfterMs) return;
 		const overlap = computeOverlap(baselineIR, lastLocalIR, remoteIR);
 		if (overlap.length === 0) return;
@@ -85,7 +88,7 @@ export function createConflicts(
 		},
 		noteLocalSave(ir: PageIR): void {
 			if (firstUnconfirmedLocalSaveAt === undefined) {
-				firstUnconfirmedLocalSaveAt = Date.now();
+				firstUnconfirmedLocalSaveAt = nowMs();
 				baselineIR = lastLocalIR;
 			}
 			lastLocalIR = ir;
