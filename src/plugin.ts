@@ -20,6 +20,12 @@ import {
 } from "./inbound-scheduler.js";
 import { type TimingKind, nowMs } from "./metrics.js";
 import {
+	ROOT_DROPPABLE_ID,
+	type PuckContentItem,
+	type PuckData,
+	type ReplaceAction,
+} from "./puck-shapes.js";
+import {
 	createRemoteDispatchGuard,
 	type RemoteDispatchGuard,
 } from "./remote-guard.js";
@@ -288,7 +294,7 @@ export function createCollabDataPlugin(
 						// `noteSuppressed()` tells the dispatch region a
 						// synchronous echo was handled here, so it can skip
 						// the O(document) exact-data fallback entirely.
-						if (remoteGuard.withinGraceWindow(Date.now())) {
+						if (remoteGuard.withinGraceWindow(nowMs())) {
 							remoteGuard.noteSuppressed();
 							return;
 						}
@@ -332,7 +338,7 @@ export function createCollabDataPlugin(
 							// pendingRemoteData), so this only captures genuine
 							// local edits.
 							localShadow.pending = ir;
-							localShadow.pendingAt = Date.now();
+							localShadow.pendingAt = nowMs();
 							const result = options.adapter.save(ir, {});
 							Promise.resolve(result).catch((error: unknown) => {
 								changeCtx.log(
@@ -433,8 +439,18 @@ function dispatchRemoteIR(
 	// scope the inbound `canEdit` walk to the changed ids. Structural
 	// updates, hydration, and legacy adapters (`changed === undefined`)
 	// keep the full-tree check.
+	//
+	// P1 — a `relink` (topology change: reorder / insert / delete) is
+	// reported `structural: false` so the live-IR cache stays
+	// incremental, but the Puck-side dispatch must NOT scope: a moved
+	// id at a new slot is exactly what the scoped `replace` planner
+	// cannot prove. Treat relink like structural here so the proven
+	// full `irToPuckData` + `setData` path runs — byte-identical to the
+	// pre-P1 behaviour for topology changes.
 	const changedIds =
-		changed !== undefined && !changed.structural ? changed.ids : undefined;
+		changed !== undefined && !changed.structural && changed.relink === undefined
+			? changed.ids
+			: undefined;
 	const violation = enforcePolicy(
 		validated,
 		checkedPeer,
@@ -469,7 +485,7 @@ function dispatchRemoteIR(
 	const shielded = applyLocalShield(
 		validated,
 		localShadow,
-		Date.now(),
+		nowMs(),
 		changedIds,
 	);
 	localShadow.lastDispatched = validated;
@@ -572,7 +588,7 @@ function dispatchRemoteIR(
 		// nothing (replaces the old speculative count + rollback).
 		if (!dispatchFailed && !remoteGuard.consumedSyncEcho()) {
 			const key = stableStringify(data);
-			const now = Date.now();
+			const now = nowMs();
 			sweepPendingRemoteData(pendingRemoteData, now);
 			const existing = pendingRemoteData.get(key);
 			if (existing) {
@@ -704,30 +720,9 @@ function applyLocalShield(
 	return mutated ? { ...remote, root } : remote;
 }
 
-/**
- * Re-export of Puck's data shape for the diff planner. We intentionally
- * keep the structural typing here loose — we only care about the
- * `content` array and the optional `zones` map.
- */
-type PuckData = {
-	readonly content?: ReadonlyArray<PuckContentItem>;
-	readonly zones?: Readonly<Record<string, ReadonlyArray<PuckContentItem>>>;
-	readonly root?: unknown;
-};
-
-type PuckContentItem = {
-	readonly type: string;
-	readonly props: Readonly<Record<string, unknown>> & { readonly id: string };
-};
-
-type ReplaceAction = {
-	readonly type: "replace";
-	readonly destinationZone: string;
-	readonly destinationIndex: number;
-	readonly data: PuckContentItem;
-};
-
-const ROOT_DROPPABLE_ID = "root:default-zone";
+// `PuckData` / `PuckContentItem` / `ReplaceAction` / `ROOT_DROPPABLE_ID`
+// are imported from `./puck-shapes.js` (A1) — the single source of
+// truth shared with `incremental-projection.ts`.
 
 /**
  * Plan a sequence of Puck `replace` actions that take `before` to
@@ -942,7 +937,7 @@ function consumePendingRemoteData(
 	// nothing to match against (belt-and-suspenders with the size
 	// guard at the onDataChange call site).
 	if (pendingRemoteData.size === 0) return false;
-	sweepPendingRemoteData(pendingRemoteData, Date.now());
+	sweepPendingRemoteData(pendingRemoteData, nowMs());
 	const key = stableStringify(data);
 	const entry = pendingRemoteData.get(key);
 	if (!entry) return false;

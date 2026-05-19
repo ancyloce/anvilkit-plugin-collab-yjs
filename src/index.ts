@@ -7,6 +7,11 @@ export { decodeIR, encodeIR, hashIR } from "./encode.js";
 export { createCollabDataPlugin, createCollabPlugin } from "./plugin.js";
 export { usePuckSelection } from "./selection-bridge.js";
 export {
+	SnapshotCorruptedError,
+	SnapshotNotFoundError,
+	SnapshotPrunedError,
+} from "./snapshot-errors.js";
+export {
 	MAX_DISPLAY_NAME_LENGTH,
 	sanitizeDisplayName,
 	validatePeerInfo,
