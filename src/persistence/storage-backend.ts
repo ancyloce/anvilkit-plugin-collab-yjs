@@ -38,6 +38,20 @@ export interface StorageBackend {
 	 */
 	hydrate(): Promise<readonly Uint8Array[]>;
 
+	/**
+	 * R2 — crash-safe compaction. Reads the current backlog, hands it to
+	 * `merge` (the caller folds it into one equivalent update), then
+	 * **durably commits the merged blob BEFORE deleting the source
+	 * rows**. A crash between the two leaves the merged blob plus the
+	 * originals — a recoverable superset (Y.js `applyUpdateV2` is
+	 * commutative and idempotent over merged ∪ originals) — never an
+	 * empty store. `merge` returning `undefined` (≤1 row) is a no-op.
+	 * MUST NOT throw on fault — downgrade like `append()`.
+	 */
+	compact(
+		merge: (all: readonly Uint8Array[]) => Uint8Array | undefined,
+	): Promise<void>;
+
 	/** Current number of entries in the store. Synchronous best-effort. */
 	size(): number;
 
@@ -60,6 +74,9 @@ export function createNullBackend(): StorageBackend {
 		},
 		async hydrate(): Promise<readonly Uint8Array[]> {
 			return [];
+		},
+		async compact(): Promise<void> {
+			// no-op
 		},
 		size(): number {
 			return 0;
