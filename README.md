@@ -1,26 +1,18 @@
 # @anvilkit/plugin-collab-yjs
 
-> **Beta channel.** This package ships under the `@beta` npm dist-tag
-> through the Phase 1 cycle (v0.10.x). Per-node CRDT merge via
-> `useNativeTree` is now the default; hosts can opt back into the
-> legacy whole-document JSON encoding with `useNativeTree: false` for
-> backward-compatible rooms. See `docs/policies/lts.md` for the GA
-> timeline.
+> **Release candidate (`0.10.x`).** Ships under the `@next` npm dist-tag. Per-node CRDT merge (`useNativeTree`) is now the default. See `docs/policies/lts.md` for the GA timeline.
 
-A first-party Anvilkit Studio plugin that proves the
-`SnapshotAdapter` v2 contract can host live CRDT state alongside Puck
-without forking Core or Puck. Built on
-[Yjs](https://github.com/yjs/yjs) and
-[`y-protocols/awareness`](https://github.com/yjs/y-protocols).
+A first-party Anvilkit Studio plugin that proves the `SnapshotAdapter` v2 contract can host live CRDT state alongside Puck without forking Core or Puck. Built on [Yjs](https://github.com/yjs/yjs) and [`y-protocols/awareness`](https://github.com/yjs/y-protocols), it ships the data layer only — pair it with `@anvilkit/collab-ui` for the React presentation layer or compose your own UI on top of the public hooks.
 
-## Usage
+## Installation
 
-> **Naming note.** Since v0.10.0 the data-only factory previously
-> exported as `createCollabPlugin` is named `createCollabDataPlugin`.
-> The legacy name remains available as a deprecated alias (one minor
-> release) so existing code keeps compiling; it logs a one-shot
-> `console.warn` on first call. For the *full* data + UI bundle, import
-> `createCollabPlugin` from `@anvilkit/plugin-collab-ui` instead.
+```bash
+pnpm add @anvilkit/plugin-collab-yjs yjs y-protocols react react-dom @puckeditor/core
+```
+
+`yjs` and `y-protocols` are direct runtime dependencies. `react`, `react-dom`, and `@puckeditor/core` are non-optional peers — the plugin runs inside the Studio shell. For a transport, install `y-websocket` (demos) or wire your own provider (Hocuspocus, custom WebRTC, etc.).
+
+## Quickstart
 
 ```ts
 import {
@@ -38,260 +30,301 @@ const adapter = createYjsAdapter({
   doc,
   awareness: provider.awareness,
   peer: { id: "alice", displayName: "Alice", color: "#f43f5e" },
-  // Native-tree is the default (L1). Disjoint concurrent edits to
-  // different nodes merge cleanly instead of LWW-overwriting each
-  // other. Pass `useNativeTree: false` only for legacy rooms that
-  // still run the JSON-blob encoding — pick one mode per room;
-  // native-tree replicas and JSON-blob replicas cannot share a Y.Doc.
 });
 
-// Optional: coalesce slider drags / rapid typing into one write per
-// debounce window (default 150ms).
 const debounced = createDebouncedAdapter(adapter, { ms: 150 });
 
 registerPlugins([
   createCollabDataPlugin({
     adapter: debounced,
     puckConfig: myPuckConfig,
-    // REQUIRED for multi-peer rooms. Omitting localPeer makes the
-    // plugin mint an ephemeral `local-<uuid>` id and log a warning,
-    // but a stable id per user is necessary for conflict attribution,
-    // policy enforcement, and presence cursors.
     localPeer: { id: "alice", displayName: "Alice", color: "#f43f5e" },
-    // Defense-in-depth — every transport is treated as untrusted.
-    // Returning null or throwing rejects the remote update.
-    validateRemoteIR: (ir) => (isWellFormed(ir) ? ir : null),
-    onValidationFailure: (failure) => toast(`Rejected: ${failure.kind}`),
-    // Surface outbound transport failures (network blip, backend
-    // 5xx, etc.) so they don't disappear into unhandledRejection.
-    onSaveError: (error) => toast(`Save failed: ${error}`),
   }),
 ]);
+```
 
-// Phase 1 (D2): subscribe to overlap diagnostics for host UI toasts.
-adapter.onConflict((event) => {
-  toast(`Edit overlapped on nodes: ${event.nodeIds.join(", ")}`);
+For the full data + UI bundle in a single factory call, import `createCollabPlugin` from `@anvilkit/collab-ui` instead.
+
+## Core features
+
+- **Per-node CRDT merge by default** — `PageIR` is mirrored as a flat-addressed `Y.Map` tree, so concurrent edits to disjoint nodes both survive instead of overwriting each other under whole-document LWW.
+- **Snapshot history** — every `save()` writes both the live encoding and a `snapshotMeta:<id>` + `snapshotPayload:<id>` pair, satisfying the `SnapshotAdapter` history contract regardless of which encoding is live.
+- **Conflict diagnostics** — `onConflict(event)` fires when a remote update lands on top of a local in-flight edit within `staleAfterMs` (default 2000 ms).
+- **Connection-state contract** — five-variant `ConnectionStatus` (`connecting`/`synced`/`offline`/`reconnecting`/`error`) lets hosts render a unified sync indicator without reading provider-specific fields.
+- **Observability** — `metrics()` returns latency percentiles, awareness churn (5-minute sliding window), validation-failure counts, and main-thread hot-path timings for telemetry sinks.
+- **Cross-tab persistence** — opt-in IndexedDB queue + same-origin `BroadcastChannel` relay. Survives brief disconnects and syncs two tabs of the same app without round-tripping through the transport.
+- **Defense-in-depth presence security** — strict color allowlist, control-character stripping on display names, awareness rate-limiting, and a `validateRemoteIR` hook for hostile-peer rejection.
+- **Force resync** — `adapter.forceResync()` discards unsaved local edits and re-emits the latest authoritative snapshot for the host's "discard and reload" affordance.
+
+## API reference
+
+### Factory functions
+
+| Function                 | Signature                                                                       | Purpose                                                                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createYjsAdapter`       | `(opts: CreateYjsAdapterOptions) => YjsSnapshotAdapter`                         | Builds the CRDT-backed `SnapshotAdapter` from a Yjs `Doc` and optional `Awareness`.                                                                                             |
+| `createCollabDataPlugin` | `(opts: CreateCollabPluginOptions) => StudioPlugin`                             | Wraps the adapter into a Studio plugin (data sync only — no UI).                                                                                                                |
+| `createDebouncedAdapter` | `(adapter, opts?: CreateDebouncedAdapterOptions) => SnapshotAdapterWithMetrics` | Coalesces rapid `save()` calls into a single transport write per debounce window (default 150 ms). Returns an adapter with a `destroy()` method that must be called on unmount. |
+| `createCollabPlugin`     | _deprecated alias of `createCollabDataPlugin`_                                  | Retained for one minor release. Logs a one-shot `console.warn` on first call. Import `createCollabPlugin` from `@anvilkit/collab-ui` for the bundled UI factory.                |
+
+### `CreateYjsAdapterOptions`
+
+| Field                | Type                        | Default                | Purpose                                                                                                                                                                       |
+| -------------------- | --------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `doc`                | `YDoc`                      | _required_             | Yjs document. Host-owned; the adapter never constructs its own.                                                                                                               |
+| `awareness`          | `Awareness`                 | auto-created           | Presence channel. When omitted, the adapter creates one internally.                                                                                                           |
+| `peer`               | `PeerInfo`                  | ephemeral              | Local identity. Omitting it mints a `local-<uuid>` id with a warn log. Provide a stable id in production.                                                                     |
+| `mapName`            | `string`                    | `"default"`            | Root `Y.Map` key.                                                                                                                                                             |
+| `staleAfterMs`       | `number`                    | `2000`                 | Window during which a remote update touching locally-edited nodes counts as an overlap.                                                                                       |
+| `useNativeTree`      | `boolean`                   | `true`                 | Per-node CRDT merge. Set `false` only for legacy JSON-blob rooms — replicas with different modes cannot share a `Y.Doc`.                                                      |
+| `connectionSource`   | `ConnectionSource`          | none                   | Host transport-event source. The host calls `emit(status)` as the provider's connection state changes.                                                                        |
+| `computeDelta`       | `boolean`                   | `false`                | When `true`, every `save()` attaches a structural `IRDiff` to `SnapshotMeta.delta`.                                                                                           |
+| `maxSnapshots`       | `number`                    | `200`                  | Hard ceiling on retained snapshots in the shared `Y.Doc`. Older payload+meta pairs are evicted in the same transaction as the write. Set `<= 0` to disable (not recommended). |
+| `awarenessRateLimit` | `AwarenessRateLimitOptions` | `{ maxPerSecond: 30 }` | Token-bucket limiter on outbound `presence.update`. Set `maxPerSecond: Infinity` to disable.                                                                                  |
+| `persistence`        | `PersistenceOptions`        | none                   | Opt-in IndexedDB queue and `BroadcastChannel` relay. Each backend feature-detects and degrades silently on SSR or older browsers.                                             |
+
+### `CreateCollabPluginOptions`
+
+| Field                   | Type                                   | Default    | Purpose                                                                                                                                        |
+| ----------------------- | -------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapter`               | `SnapshotAdapter`                      | _required_ | The CRDT adapter (usually from `createYjsAdapter`, optionally wrapped in `createDebouncedAdapter`).                                            |
+| `puckConfig`            | `Config`                               | none       | Required for outbound sync (Puck → IR). Omit for read-only viewers.                                                                            |
+| `localPeer`             | `PeerInfo`                             | ephemeral  | Identity used for conflict attribution, policy checks, and presence cursors. Omitting it logs a warning and mints a per-instance ephemeral id. |
+| `validateRemoteIR`      | `(ir: PageIR) => PageIR \| null`       | none       | Defense-in-depth validation hook. Returning `null` or throwing rejects the update.                                                             |
+| `onValidationFailure`   | `(failure: ValidationFailure) => void` | none       | Host-side observer for rejected remote IRs (toast, telemetry).                                                                                 |
+| `onSaveError`           | `(error: unknown) => void`             | none       | Outbound transport-failure observer. Without it, network 5xx errors surface as `unhandledRejection`.                                           |
+| `policy`                | `CollabPolicy`                         | none       | Symmetric RBAC bridge. `canEdit(node, peer)` is consulted inbound and outbound.                                                                |
+| `onPolicyViolation`     | `(violation: PolicyViolation) => void` | none       | Fired when `policy.canEdit` rejects.                                                                                                           |
+| `replaceBatchThreshold` | `number`                               | `50`       | Per-node `replace` dispatches below this threshold; above it the plugin falls back to a single `setData` call.                                 |
+
+### `YjsSnapshotAdapter`
+
+Extends `SnapshotAdapter` (from `@anvilkit/plugin-version-history`) with:
+
+| Member           | Signature                                                 | Purpose                                                                                                                                     |
+| ---------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onConflict`     | `(cb: (event: ConflictEvent) => void) => Unsubscribe`     | Overlap diagnostics.                                                                                                                        |
+| `onStatusChange` | `(cb: (status: ConnectionStatus) => void) => Unsubscribe` | Connection-state stream. Invoked synchronously with the current status on registration.                                                     |
+| `getStatus`      | `() => ConnectionStatus`                                  | Sync read of the latest status. Prefer `onStatusChange` inside `useSyncExternalStore` in React.                                             |
+| `forceResync`    | `() => Promise<PageIR \| null>`                           | Discard unsaved local edits and re-emit the latest authoritative snapshot. Resolves to `null` if no snapshot exists.                        |
+| `metrics`        | `() => MetricsSnapshot`                                   | Point-in-time observability snapshot. Cheap to call at second-cadence polling.                                                              |
+| `destroy`        | `() => void`                                              | Release internal subscriptions. Called automatically by the Studio plugin's `onDestroy` — only needed if you build a custom plugin wrapper. |
+
+### `ConnectionStatus` (discriminated union)
+
+```ts
+type ConnectionStatus =
+  | { kind: "connecting" }
+  | { kind: "synced"; since: string }
+  | { kind: "offline"; since: string; queuedEdits: number }
+  | { kind: "reconnecting"; attempt: number; backoffMs: number }
+  | { kind: "error"; message: string; recoverable: boolean };
+```
+
+`queuedEdits` is populated by the adapter from its internal counter; the value the host passes is ignored.
+
+### `ConflictEvent`
+
+```ts
+interface ConflictEvent {
+  kind: "overlap";
+  localPeer: PeerInfo;
+  remotePeer?: PeerInfo;
+  nodeIds: readonly string[];
+  at: string;
+}
+```
+
+### `MetricsSnapshot` (selected fields)
+
+| Field                                                                                                            | Meaning                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `saveCount`, `transportWrites`, `saveCoalescingRatio`                                                            | Save traffic and debouncer efficacy.                                                                                                   |
+| `syncLatencyP50Ms`, `syncLatencyP95Ms`, `syncLatencySamples`                                                     | End-to-end latency percentiles over the last 200 samples.                                                                              |
+| `awarenessChurn`, `presenceValidationFailures`                                                                   | Presence health — high churn or non-zero failures point to a misbehaving peer.                                                         |
+| `inboundCoalesced`, `inboundQueueDelayP50Ms`                                                                     | Inbound coalescer activity. Non-zero `inboundCoalesced` means the adapter shielded the editor from a remote burst.                     |
+| `conversionTimeP50Ms`, `dispatchTimeP50Ms`, `saveEncodeTimeP50Ms`, `nativeApplyTimeP50Ms`, `nativeReadTimeP50Ms` | Main-thread hot-path timings (P1).                                                                                                     |
+| `degraded`, `degradedReasons`                                                                                    | Whether the adapter fell back from native-tree to legacy blob, and the trip reason (`cycle`/`max-depth`/`max-nodes`/`decode-failure`). |
+| `dispatchFailures`                                                                                               | Number of remote `subscribe` callback invocations that threw.                                                                          |
+
+### Encoding utilities and snapshot diff
+
+| Export                            | Purpose                                               |
+| --------------------------------- | ----------------------------------------------------- |
+| `encodeIR(ir)` / `decodeIR(json)` | Stable JSON encoding used for snapshot payloads.      |
+| `hashIR(encoded)`                 | Content hash used by `SnapshotMeta.pageIRHash`.       |
+| `diffSnapshots(prev, next)`       | Structural per-node diff between two `PageIR` values. |
+
+### Presence validation
+
+| Export                                                                                  | Purpose                                                                                    |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `sanitizeDisplayName(value)`                                                            | Strips `U+0000`–`U+001F` / `U+007F` and truncates to `MAX_DISPLAY_NAME_LENGTH` (64 chars). |
+| `validatePeerInfo(value)`                                                               | Strict validation. Color must match the allowlist; rejection drops the entire peer record. |
+| `validatePresenceState(value)` / `validatePresenceCursor` / `validatePresenceSelection` | Inbound awareness validators used by the adapter; exported for host-side defense-in-depth. |
+| `MAX_DISPLAY_NAME_LENGTH`                                                               | `64`.                                                                                      |
+
+### Errors
+
+- `SnapshotCorruptedError`, `SnapshotNotFoundError`, `SnapshotPrunedError` — typed errors thrown from `load(id)`.
+- `DebouncedAdapterDestroyedError` — thrown when methods are called on a `createDebouncedAdapter` instance after `destroy()`.
+
+### React bridge
+
+- `usePuckSelection()` — maps Puck's selected component into `PresenceSelection` for outbound awareness updates. Use inside a host component mounted within `<Puck>`.
+
+## Usage examples
+
+### In-memory test harness
+
+```ts
+import { Awareness } from "y-protocols/awareness";
+import { Doc as YDoc } from "yjs";
+import { createYjsAdapter } from "@anvilkit/plugin-collab-yjs";
+
+const doc = new YDoc();
+const awareness = new Awareness(doc);
+const adapter = createYjsAdapter({
+  doc,
+  awareness,
+  peer: { id: "test-user", displayName: "Test" },
+});
+
+// In tests, the adapter starts in `connecting` and flips to `synced`
+// on the first subscribe() registration, so no transport plumbing is
+// needed for unit tests.
+adapter.subscribe((ir) => {
+  console.log("emitted IR", ir);
 });
 ```
 
-## Encoding
-
-By default the live `PageIR` is mirrored as a flat-addressed `Y.Map`
-tree (one `Y.Map` per node, plus a `childIds` `Y.Array` per parent).
-Concurrent edits to **different** node ids merge cleanly via Y.js per-
-key CRDT semantics. Edits to the *same* node still rely on Y.Map
-prop-level LWW.
-
-The legacy whole-document JSON encoding under a single `pageIR` `Y.Map`
-key is preserved as a fallback — `save()` writes both representations
-so a tree-aware adapter and a blob-aware adapter can read the same
-snapshot. Set `useNativeTree: false` to opt back into the JSON-blob
-encoding (LWW on the whole document, lossier under concurrent edits to
-disjoint nodes).
-
-**Migration.** Adapters constructed on a Y.Doc that only has the legacy
-JSON-blob payload (and no native-tree state) automatically hydrate the
-tree from the blob at construction time. The migration is one-shot,
-transactional, and idempotent — subsequent adapters short-circuit.
-Hosts upgrading from a pre-L1 version can roll the new adapter without
-a separate migration step.
-
-Each saved snapshot also gets its own `snapshotMeta:<id>` and
-`snapshotPayload:<id>` keys so the adapter can satisfy the
-`SnapshotAdapter` history contract regardless of the live encoding.
-
-### Snapshot diff (L2)
-
-Pass `computeDelta: true` and every `save()` attaches an `IRDiff` to
-the resulting `SnapshotMeta.delta`. Useful for audit logs, change-
-summary UIs (`summarizeDiff(meta.delta)` from
-`@anvilkit/plugin-version-history` returns a human string), and
-undo-stack replay. The first save's delta is computed against the
-empty document; subsequent saves are computed against the previous
-locally saved IR. Off by default to preserve write performance.
-
-See [`docs/architecture/realtime-collab.md`](../../../docs/architecture/realtime-collab.md)
-for the full design and threat model.
-
-## Presence security
-
-Awareness payloads ride an untrusted transport. The adapter validates
-every inbound `PresenceState` through `validatePresenceState`, which
-delegates to `validatePeerInfo` for the peer record. Two specific
-hardenings are worth knowing about when you render presence data into
-the DOM:
-
-- **`color` allowlist.** Anything that doesn't match `#rgb` / `#rrggbb`
-  / `#rrggbbaa`, `rgb(...)`, `rgba(...)`, or a small named-color set is
-  rejected — including `javascript:`, `expression(...)`, `<script>...`,
-  and arbitrary strings. Rejection drops the entire peer record (not
-  just the color field) so a malicious peer cannot smuggle a payload
-  with only the safe parts.
-- **`displayName` sanitization.** `sanitizeDisplayName` strips ASCII
-  control characters (`U+0000`–`U+001F` and `U+007F`) and truncates to
-  `MAX_DISPLAY_NAME_LENGTH` (64 chars). It does **not** HTML-escape —
-  if your UI injects the name via `innerHTML` or templates that don't
-  auto-escape, escape at the rendering boundary.
+### Host-driven connection status
 
 ```ts
-import {
-  MAX_DISPLAY_NAME_LENGTH,
-  sanitizeDisplayName,
-} from "@anvilkit/plugin-collab-yjs";
+import type { ConnectionSource } from "@anvilkit/plugin-collab-yjs";
+import { WebsocketProvider } from "y-websocket";
 
-// Belt-and-suspenders: sanitize at construction time too.
-const localPeer = {
-  id: "alice",
-  displayName: sanitizeDisplayName(userInput),
-  color: "#f43f5e",
+let queuedEdits = 0;
+
+const connectionSource: ConnectionSource = (emit) => {
+  const onStatus = (e: { status: string }) => {
+    if (e.status === "connected") emit({ kind: "connecting" });
+    if (e.status === "disconnected") {
+      emit({
+        kind: "offline",
+        since: new Date().toISOString(),
+        queuedEdits,
+      });
+    }
+  };
+  const onSync = (synced: boolean) => {
+    if (synced) emit({ kind: "synced", since: new Date().toISOString() });
+  };
+  provider.on("status", onStatus);
+  provider.on("sync", onSync);
+  return () => {
+    provider.off("status", onStatus);
+    provider.off("sync", onSync);
+  };
+};
+
+createYjsAdapter({ doc, awareness, connectionSource });
+```
+
+### Force resync flow
+
+```ts
+const forceResync = async () => {
+  const restored = await adapter.forceResync();
+  if (restored === null) {
+    toast.warn("No snapshot to restore from.");
+    return;
+  }
+  toast.success("Reloaded the latest collaborative snapshot.");
 };
 ```
 
-`MetricsSnapshot.presenceValidationFailures` counts how many inbound
-peer records were rejected, so hosts can alert on a noisy or hostile
-room without inspecting individual payloads.
+### Policy + validation hooks
 
-## Reference transport
+```ts
+import type {
+  CollabPolicy,
+  ValidateRemoteIR,
+} from "@anvilkit/plugin-collab-yjs";
 
-A minimal `y-websocket` relay lives under `examples/` in this
-repository. The examples directory is source-only and is not included
-in the published npm package:
+const policy: CollabPolicy = {
+  canEdit: (node, peer) => {
+    if (node.props?.locked === true) return peer.id === node.props.lockedBy;
+    return true;
+  },
+};
+
+const validateRemoteIR: ValidateRemoteIR = (ir) => {
+  if (!ir.root || typeof ir.root !== "object") return null;
+  if (ir.version !== "1") return null;
+  return ir;
+};
+
+createCollabDataPlugin({
+  adapter,
+  puckConfig,
+  localPeer,
+  policy,
+  validateRemoteIR,
+  onPolicyViolation: (v) => telemetry.warn("policy-violation", v),
+  onValidationFailure: (f) => telemetry.warn("validation-failure", f),
+});
+```
+
+## Notes & FAQ
+
+### Native-tree vs legacy JSON-blob
+
+Native-tree (`useNativeTree: true`, the default) mirrors the live `PageIR` as a flat-addressed `Y.Map` tree — one `Y.Map` per node, plus a `childIds` `Y.Array` per parent. Same-node edits still fall back to per-key LWW; different-node edits merge cleanly.
+
+The legacy whole-document JSON-blob encoding under a single `pageIR` key is preserved as a fallback. `save()` writes both representations so a tree-aware adapter and a blob-aware adapter can read the same snapshot. **You cannot mix encodings in one `Y.Doc`** — pick one mode per room.
+
+**Migration is automatic.** Adapters constructed on a `Y.Doc` that only has the legacy blob (no native-tree state) hydrate the tree from the blob at construction time. The migration is one-shot, transactional, and idempotent — subsequent adapters short-circuit. Hosts upgrading from a pre-`0.10` version can roll the new adapter without a separate migration step.
+
+### Presence is untrusted input
+
+The adapter validates every inbound `PresenceState` through `validatePresenceState`. Two specific hardenings:
+
+- **`color` allowlist.** Anything that doesn't match `#rgb` / `#rrggbb` / `#rrggbbaa`, `rgb(...)`, `rgba(...)`, or the named-color set is rejected — including `javascript:`, `expression(...)`, `<script>`, and arbitrary strings. Rejection drops the entire peer record so a malicious peer cannot smuggle a payload with only the safe parts.
+- **`displayName` sanitization.** `sanitizeDisplayName` strips ASCII control characters and truncates to 64 chars. It does **not** HTML-escape — if your UI injects the name via `innerHTML`, escape at the rendering boundary.
+
+`MetricsSnapshot.presenceValidationFailures` counts rejected peers so hosts can alert on a noisy or hostile room without inspecting individual payloads.
+
+### `createDebouncedAdapter` requires `destroy()`
+
+The wrapper holds a pending-timer reference. Call `destroy()` on unmount to cancel pending timers and forward teardown to the wrapped adapter. Methods called after `destroy()` throw `DebouncedAdapterDestroyedError`.
+
+### Reference transport and production deployment
+
+A minimal `y-websocket` relay lives under `examples/y-websocket-server.mjs` in this repository (source-only, not in the published npm package):
 
 ```bash
 node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
 ```
 
-For production deployments — auth, durable Postgres persistence, and
-Redis-backed horizontal scale-out via
-[Hocuspocus](https://tiptap.dev/hocuspocus) — follow the recipe at
-[`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
+For production deployments — auth, durable Postgres persistence, and Redis-backed horizontal scale-out via [Hocuspocus](https://tiptap.dev/hocuspocus) — follow the recipe at [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
 
-## Performance characteristics
+### Performance characteristics
 
-Steady-state collaborative editing is optimised for large CMS pages.
-The costs that matter at scale, and where they stand:
+- **Remote edits — incremental.** A remote prop edit re-reads only the touched nodes. A reorder/insert/delete emits a structured relink delta so the live-IR cache relinks only the affected parents + added nodes, reusing every untouched node's already-parsed props. A genuine whole-document change still falls back to a full guarded rebuild — the correctness backstop.
+- **Local `save()` — O(changed) apply, O(document) floor.** The Y.Doc apply writes only changed/added nodes and deletes removed ones. The residual O(document) cost is the `encodeIR(ir)` snapshot payload string written every save; `SnapshotMeta.pageIRHash` keeps its `hashIR(encodeIR(ir))` definition.
+- **Residual tail costs.** Snapshot meta re-scan O(`maxSnapshots`) per save, pending-index rebuild O(document) under interleaved remote bursts during active typing, conflict overlap O(document) per remote flush when an `onConflict` listener is attached, and wide-child-list reconciliation O(n²) for parents with thousands of children. All gated by `pnpm bench:collab-highload`.
 
-- **Remote edits (all peers) — incremental.** A remote prop edit
-  re-reads only the touched nodes. A **reorder / insert / delete**
-  (routine in a page builder) no longer forces every connected peer
-  to re-parse the whole document: the adapter emits a structured
-  *relink* delta and the live-IR cache relinks only the affected
-  parents + added nodes, reusing every untouched node's already-parsed
-  props. A genuine whole-document change (root id / version / assets /
-  metadata) or any ambiguous event still falls back to a full guarded
-  rebuild — the correctness backstop. The Puck-side dispatch for a
-  topology change stays the proven full `setData` (byte-identical to
-  prior behaviour); the win is removing the O(document) re-parse
-  fan-out across peers.
+Budget guidance: pages up to a few thousand nodes with the default `maxSnapshots` stay comfortably within frame budget.
 
-- **Local `save()` — O(changed) apply, O(document) floor.** The Y.Doc
-  apply writes only changed/added nodes and deletes removed ones
-  (`applyChangedNodesToNativeTree`), byte-identical to a full apply.
-  Save-time classification is one content hash per next-node (cached
-  per-node in the live-IR state) instead of stringifying every node's
-  props/assets/meta twice. A residual O(document) cost per save is
-  inherent and **deferred (I1)**: `encodeIR(ir)` produces the snapshot
-  *payload* string that is stored every save, and hashing the next
-  side is itself O(document). `SnapshotMeta.pageIRHash` keeps its
-  `hashIR(encodeIR(ir))` definition — unchanged, so there is no
-  cross-version hash-format concern.
+### Cross-tab persistence is opt-in
 
-- **Residual tail costs (deferred, gated by
-  `pnpm bench:collab-highload`).** These are acceptable at typical
-  sizes; the node/snapshot count at which each starts to matter:
-  - *Snapshot meta re-scan (P3)* — `readSnapshotMetas` re-parses every
-    retained snapshot meta on each `save()` (and `list()`/`load()`).
-    O(`maxSnapshots`, default 200) per keystroke.
-  - *Pending-index rebuild (P4)* — the dirty-field shield rebuilds the
-    pending-IR index per coalesced remote flush *while a local edit is
-    in flight*; O(document) only under interleaved remote bursts
-    during active typing.
-  - *Conflict overlap (P5)* — when an `onConflict` listener is
-    attached (the collab-ui default), overlap is computed over the
-    whole tree per remote flush within the `staleAfterMs` window.
-  - *Wide child lists (P6)* — `reconcileKeyedArray` is O(n²) for a
-    single parent with thousands of children undergoing many local
-    adds/reorders (long lists, table-like layouts); most nodes have
-    few children so this is a pathological-width tail.
+Both `persistence.indexedDb` and `persistence.broadcastChannel` default to `false`. When enabled, each backend feature-detects at construction time and degrades silently if its API is unavailable (SSR, older browsers, certain test runners). Use `persistence.onFault` to learn about quota or schema faults — the adapter never throws out of persistence into the `Y.Doc` observer chain.
 
-  Budget guidance: pages up to a few thousand nodes with the default
-  `maxSnapshots` stay comfortably within frame budget; `bench:collab-
-  highload` is the regression gate for all of the above.
+Snapshot-level persistence (full state dump for fast tab bootstrap) and encryption at rest for the IDB queue are deferred. Cross-origin / iframe persistence is explicitly out of scope — `BroadcastChannel` is same-origin and that is the correct boundary for an editor.
 
-## Phases and roadmap
+### See also
 
-### Shipped — code-review repairs (2026-05-19)
-
-Addresses the `0.10.0-rc.1` static review: atomic IndexedDB `drain()`
-(R1), crash-safe append-then-delete offline compaction (R2), typed
-`SnapshotNotFoundError` / `SnapshotPrunedError` / `SnapshotCorrupted-
-Error` from `load()` (R3), a shared `puck-shapes` module with a
-compile-time Puck-drift assertion (A1), monotonic-clock correctness
-windows (R5), incremental structural relink for reorder/insert/delete
-(P1), and per-node content-hash save classification (P2). See the
-**Performance characteristics** section and CHANGELOG.
-
-### Shipped — `0.10.0-rc.0` (2026-05-14)
-
-- **L1** — Native-tree is now the default encoding. Per-node CRDT
-  merge replaces whole-document LWW. Legacy JSON-blob rooms can opt
-  back in via `useNativeTree: false`; migration from JSON-blob to
-  native-tree happens automatically at construction time.
-- **L2** — Snapshot diff API. `SnapshotMeta.delta` carries a
-  structural per-node diff when `computeDelta: true`; powers audit
-  logs and undo-stack replay.
-- **L3** — Awareness rate-limit (default 30/sec) and 5-minute
-  sliding-window churn metric. Caps awareness traffic from misbehaving
-  hosts.
-- **L5** — Cross-tab persistence. Opt-in IndexedDB queue + same-origin
-  `BroadcastChannel` relay. Survives brief disconnects, syncs two
-  tabs of the same app without round-tripping through the transport.
-- **L6** — Hocuspocus production deployment recipe with auth,
-  Postgres persistence, and Redis scale-out. See
-  [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
-
-### Shipped — `0.9.0-rc.1` (2026-05-13)
-
-GA-stabilization round closing 24 issues from the 2026-05-13 code
-review. Lifecycle/cleanup hardening, echo-detection collision fix,
-per-instance peer-id fallback, presence security (color allowlist +
-displayName sanitization), metrics enrichment, and a no-behavior-
-change refactor of `yjs-adapter.ts` into per-concern modules. See
-CHANGELOG.
-
-### In progress / next
-
-- **L4 / longer-term docs.** This roadmap section, CHANGELOG voice
-  alignment with sibling plugins.
-
-### Deferred
-
-- **Snapshot-level persistence.** Full state dump for fast tab
-  bootstrap without replaying every update.
-- **Encryption at rest** for the IDB queue.
-- **Cross-origin / iframe persistence.** Explicitly out of scope —
-  `BroadcastChannel` is same-origin and that is the correct boundary
-  for an editor.
-
-## Stabilization round 2026-05-13 (`0.9.0-rc.1`)
-
-This release closed the lifecycle, echo-detection, and peer-fallback
-defects raised in the 2026-05-13 code review, plus tightened metrics,
-presence security, and the `yjs-adapter` internal architecture. See
-[CHANGELOG.md](./CHANGELOG.md) for the full list. Key behavior changes
-for hosts:
-
-- `createDebouncedAdapter` now has a `destroy()` method — call it on
-  unmount to cancel pending timers and forward teardown.
-- `createCollabDataPlugin({ onSaveError })` lets you surface outbound
-  save failures (previously they became unhandled rejections). Still
-  available under the deprecated alias `createCollabPlugin` for one
-  more minor release.
-- Omitting `localPeer` now mints a per-instance ephemeral id with a
-  warn log instead of colliding all clients on `id: "local"`.
-- `validatePeerInfo` now enforces a color allowlist and a 64-char
-  displayName cap with control-character stripping.
-- `MetricsSnapshot` gains `presenceValidationFailures`; the
-  `awarenessChurn` counter is now a 5-minute sliding window (L3).
-- Outbound `presence.update` is token-bucket rate-limited (default
-  30/sec, configurable via `awarenessRateLimit.maxPerSecond`; L3).
+- [`docs/architecture/realtime-collab.md`](../../../docs/architecture/realtime-collab.md) — full design and threat model.
+- [CHANGELOG.md](./CHANGELOG.md) — per-release notes.
+- [`@anvilkit/collab-ui`](../plugin-collab-ui/README.md) — React presentation layer + consolidated `createCollabPlugin` factory.
