@@ -325,6 +325,6 @@ Snapshot-level persistence (full state dump for fast tab bootstrap) and encrypti
 
 ### See also
 
-- [`docs/architecture/realtime-collab.md`](../../../docs/architecture/realtime-collab.md) — full design and threat model.
+- The `realtime-collab` architecture doc on the Anvilkit docs site — full design and threat model.
 - [CHANGELOG.md](./CHANGELOG.md) — per-release notes.
 - [`@anvilkit/collab-ui`](../plugin-collab-ui/README.md) — React presentation layer + consolidated `createCollabPlugin` factory.
