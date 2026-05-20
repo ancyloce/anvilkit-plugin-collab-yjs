@@ -32,13 +32,13 @@ export const NATIVE_METADATA_KEY = "metadata";
 export const NATIVE_NODE_PREFIX = "node:";
 
 export function snapshotMetaKey(id: string): string {
-	return `${SNAPSHOT_META_PREFIX}${id}`;
+  return `${SNAPSHOT_META_PREFIX}${id}`;
 }
 
 export function snapshotPayloadKey(id: string): string {
-	return `${SNAPSHOT_PAYLOAD_PREFIX}${id}`;
+  return `${SNAPSHOT_PAYLOAD_PREFIX}${id}`;
 }
 
 export function nativeNodeKey(id: string): string {
-	return `${NATIVE_NODE_PREFIX}${id}`;
+  return `${NATIVE_NODE_PREFIX}${id}`;
 }

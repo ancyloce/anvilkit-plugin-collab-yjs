@@ -23,18 +23,18 @@ const CHURN_WINDOW_MS = 5 * 60_000;
 const TIMING_WINDOW_SIZE = 200;
 
 export interface MetricsState {
-	recordObservationLatency(savedAt: number): void;
-	incSaveCount(): void;
-	incDispatchFailure(): void;
-	incChurn(): void;
-	incPresenceValidationFailure(): void;
-	setDegraded(value: boolean, reason?: DegradedReason): void;
-	/** Count remote IRs superseded in the inbound buffer before flush (H1). */
-	incInboundCoalesced(n?: number): void;
-	/** Record a hot-path stage duration in milliseconds (P1). */
-	recordTiming(kind: TimingKind, ms: number): void;
-	createSnapshotId(): string;
-	snapshot(): MetricsSnapshot;
+  recordObservationLatency(savedAt: number): void;
+  incSaveCount(): void;
+  incDispatchFailure(): void;
+  incChurn(): void;
+  incPresenceValidationFailure(): void;
+  setDegraded(value: boolean, reason?: DegradedReason): void;
+  /** Count remote IRs superseded in the inbound buffer before flush (H1). */
+  incInboundCoalesced(n?: number): void;
+  /** Record a hot-path stage duration in milliseconds (P1). */
+  recordTiming(kind: TimingKind, ms: number): void;
+  createSnapshotId(): string;
+  snapshot(): MetricsSnapshot;
 }
 
 /**
@@ -56,110 +56,110 @@ export interface MetricsState {
  * at host telemetry cadence (seconds, not frames).
  */
 export function createMetricsState(): MetricsState {
-	let saveCount = 0;
-	let dispatchFailures = 0;
-	let presenceValidationFailures = 0;
-	let degraded = false;
-	const degradedReasons = new Set<DegradedReason>();
-	let snapshotCounter = 0;
-	let inboundCoalesced = 0;
-	const latencyWindow: number[] = [];
-	const churnTimestamps: number[] = [];
-	const timingWindows = new Map<TimingKind, number[]>();
+  let saveCount = 0;
+  let dispatchFailures = 0;
+  let presenceValidationFailures = 0;
+  let degraded = false;
+  const degradedReasons = new Set<DegradedReason>();
+  let snapshotCounter = 0;
+  let inboundCoalesced = 0;
+  const latencyWindow: number[] = [];
+  const churnTimestamps: number[] = [];
+  const timingWindows = new Map<TimingKind, number[]>();
 
-	function recordTiming(kind: TimingKind, ms: number): void {
-		if (!Number.isFinite(ms) || ms < 0) return;
-		let window = timingWindows.get(kind);
-		if (window === undefined) {
-			window = [];
-			timingWindows.set(kind, window);
-		}
-		window.push(ms);
-		if (window.length > TIMING_WINDOW_SIZE) window.shift();
-	}
+  function recordTiming(kind: TimingKind, ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0) return;
+    let window = timingWindows.get(kind);
+    if (window === undefined) {
+      window = [];
+      timingWindows.set(kind, window);
+    }
+    window.push(ms);
+    if (window.length > TIMING_WINDOW_SIZE) window.shift();
+  }
 
-	function timingP50(kind: TimingKind): number | null {
-		const window = timingWindows.get(kind);
-		if (window === undefined || window.length === 0) return null;
-		return percentile(
-			[...window].sort((a, b) => a - b),
-			0.5,
-		);
-	}
+  function timingP50(kind: TimingKind): number | null {
+    const window = timingWindows.get(kind);
+    if (window === undefined || window.length === 0) return null;
+    return percentile(
+      [...window].sort((a, b) => a - b),
+      0.5,
+    );
+  }
 
-	function trimChurnWindow(now: number): void {
-		const cutoff = now - CHURN_WINDOW_MS;
-		while (churnTimestamps.length > 0 && churnTimestamps[0]! < cutoff) {
-			churnTimestamps.shift();
-		}
-	}
+  function trimChurnWindow(now: number): void {
+    const cutoff = now - CHURN_WINDOW_MS;
+    while (churnTimestamps.length > 0 && churnTimestamps[0]! < cutoff) {
+      churnTimestamps.shift();
+    }
+  }
 
-	return {
-		recordObservationLatency(savedAt: number): void {
-			const elapsed = Date.now() - savedAt;
-			if (!Number.isFinite(elapsed) || elapsed < 0) return;
-			latencyWindow.push(elapsed);
-			if (latencyWindow.length > LATENCY_WINDOW_SIZE) latencyWindow.shift();
-		},
-		incSaveCount(): void {
-			saveCount += 1;
-		},
-		incDispatchFailure(): void {
-			dispatchFailures += 1;
-		},
-		incChurn(): void {
-			const now = Date.now();
-			churnTimestamps.push(now);
-			trimChurnWindow(now);
-		},
-		incPresenceValidationFailure(): void {
-			presenceValidationFailures += 1;
-		},
-		setDegraded(value: boolean, reason?: DegradedReason): void {
-			degraded = value;
-			// Reasons are an append-only audit trail — never cleared on
-			// `setDegraded(false)`, so a transient recovery doesn't erase
-			// the evidence a host needs to triage why it happened.
-			if (value && reason !== undefined) degradedReasons.add(reason);
-		},
-		incInboundCoalesced(n = 1): void {
-			if (Number.isFinite(n) && n > 0) inboundCoalesced += n;
-		},
-		recordTiming,
-		createSnapshotId(): string {
-			const counter = snapshotCounter;
-			snapshotCounter += 1;
-			const seq = globalSnapshotSeq;
-			globalSnapshotSeq += 1;
-			// seq before counter so lexicographic id order == in-process
-			// save order within a same-millisecond tie.
-			return `snap-${Date.now().toString(36)}-${seq.toString(36).padStart(10, "0")}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
-		},
-		snapshot(): MetricsSnapshot {
-			trimChurnWindow(Date.now());
-			const sorted = [...latencyWindow].sort((a, b) => a - b);
-			return {
-				saveCount,
-				transportWrites: saveCount,
-				saveCoalescingRatio: 1,
-				dispatchFailures,
-				awarenessChurn: churnTimestamps.length,
-				syncLatencyP50Ms: percentile(sorted, 0.5),
-				syncLatencyP95Ms: percentile(sorted, 0.95),
-				syncLatencySamples: sorted.length,
-				degraded,
-				degradedReasons: [...degradedReasons],
-				presenceValidationFailures,
-				inboundCoalesced,
-				inboundQueueDelayP50Ms: timingP50("inboundQueueDelay"),
-				conversionTimeP50Ms: timingP50("conversion"),
-				dispatchTimeP50Ms: timingP50("dispatch"),
-				saveEncodeTimeP50Ms: timingP50("saveEncode"),
-				nativeApplyTimeP50Ms: timingP50("nativeApply"),
-				nativeReadTimeP50Ms: timingP50("nativeRead"),
-			};
-		},
-	};
+  return {
+    recordObservationLatency(savedAt: number): void {
+      const elapsed = Date.now() - savedAt;
+      if (!Number.isFinite(elapsed) || elapsed < 0) return;
+      latencyWindow.push(elapsed);
+      if (latencyWindow.length > LATENCY_WINDOW_SIZE) latencyWindow.shift();
+    },
+    incSaveCount(): void {
+      saveCount += 1;
+    },
+    incDispatchFailure(): void {
+      dispatchFailures += 1;
+    },
+    incChurn(): void {
+      const now = Date.now();
+      churnTimestamps.push(now);
+      trimChurnWindow(now);
+    },
+    incPresenceValidationFailure(): void {
+      presenceValidationFailures += 1;
+    },
+    setDegraded(value: boolean, reason?: DegradedReason): void {
+      degraded = value;
+      // Reasons are an append-only audit trail — never cleared on
+      // `setDegraded(false)`, so a transient recovery doesn't erase
+      // the evidence a host needs to triage why it happened.
+      if (value && reason !== undefined) degradedReasons.add(reason);
+    },
+    incInboundCoalesced(n = 1): void {
+      if (Number.isFinite(n) && n > 0) inboundCoalesced += n;
+    },
+    recordTiming,
+    createSnapshotId(): string {
+      const counter = snapshotCounter;
+      snapshotCounter += 1;
+      const seq = globalSnapshotSeq;
+      globalSnapshotSeq += 1;
+      // seq before counter so lexicographic id order == in-process
+      // save order within a same-millisecond tie.
+      return `snap-${Date.now().toString(36)}-${seq.toString(36).padStart(10, "0")}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
+    },
+    snapshot(): MetricsSnapshot {
+      trimChurnWindow(Date.now());
+      const sorted = [...latencyWindow].sort((a, b) => a - b);
+      return {
+        saveCount,
+        transportWrites: saveCount,
+        saveCoalescingRatio: 1,
+        dispatchFailures,
+        awarenessChurn: churnTimestamps.length,
+        syncLatencyP50Ms: percentile(sorted, 0.5),
+        syncLatencyP95Ms: percentile(sorted, 0.95),
+        syncLatencySamples: sorted.length,
+        degraded,
+        degradedReasons: [...degradedReasons],
+        presenceValidationFailures,
+        inboundCoalesced,
+        inboundQueueDelayP50Ms: timingP50("inboundQueueDelay"),
+        conversionTimeP50Ms: timingP50("conversion"),
+        dispatchTimeP50Ms: timingP50("dispatch"),
+        saveEncodeTimeP50Ms: timingP50("saveEncode"),
+        nativeApplyTimeP50Ms: timingP50("nativeApply"),
+        nativeReadTimeP50Ms: timingP50("nativeRead"),
+      };
+    },
+  };
 }
 
 /**
@@ -168,21 +168,21 @@ export function createMetricsState(): MetricsState {
  * SSR shims) so timing recording never throws.
  */
 export function nowMs(): number {
-	return typeof performance !== "undefined" &&
-		typeof performance.now === "function"
-		? performance.now()
-		: Date.now();
+  return typeof performance !== "undefined" &&
+    typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
 
 function percentile(sorted: readonly number[], q: number): number | null {
-	if (sorted.length === 0) return null;
-	if (sorted.length === 1) return sorted[0] ?? null;
-	const rank = (sorted.length - 1) * q;
-	const lower = Math.floor(rank);
-	const upper = Math.ceil(rank);
-	const lowerValue = sorted[lower];
-	const upperValue = sorted[upper];
-	if (lowerValue === undefined || upperValue === undefined) return null;
-	if (lower === upper) return lowerValue;
-	return lowerValue + (upperValue - lowerValue) * (rank - lower);
+  if (sorted.length === 0) return null;
+  if (sorted.length === 1) return sorted[0] ?? null;
+  const rank = (sorted.length - 1) * q;
+  const lower = Math.floor(rank);
+  const upper = Math.ceil(rank);
+  const lowerValue = sorted[lower];
+  const upperValue = sorted[upper];
+  if (lowerValue === undefined || upperValue === undefined) return null;
+  if (lower === upper) return lowerValue;
+  return lowerValue + (upperValue - lowerValue) * (rank - lower);
 }

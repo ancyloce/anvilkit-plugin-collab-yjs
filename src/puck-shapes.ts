@@ -18,23 +18,23 @@
  */
 
 import type {
-	ComponentData as PuckCoreComponentData,
-	Data as PuckCoreData,
-	PuckAction as PuckCoreAction,
+  ComponentData as PuckCoreComponentData,
+  Data as PuckCoreData,
+  PuckAction as PuckCoreAction,
 } from "@puckeditor/core";
 
 /** ROOT content zone sentinel — Puck's default-zone droppable id. */
 export const ROOT_DROPPABLE_ID = "root:default-zone";
 
 export type PuckContentItem = {
-	readonly type: string;
-	readonly props: Readonly<Record<string, unknown>> & { readonly id: string };
+  readonly type: string;
+  readonly props: Readonly<Record<string, unknown>> & { readonly id: string };
 };
 
 export type PuckData = {
-	readonly content?: ReadonlyArray<PuckContentItem>;
-	readonly zones?: Readonly<Record<string, ReadonlyArray<PuckContentItem>>>;
-	readonly root?: unknown;
+  readonly content?: ReadonlyArray<PuckContentItem>;
+  readonly zones?: Readonly<Record<string, ReadonlyArray<PuckContentItem>>>;
+  readonly root?: unknown;
 };
 
 /**
@@ -45,10 +45,10 @@ export type PuckData = {
 export type ProjectionData = PuckData;
 
 export type ReplaceAction = {
-	readonly type: "replace";
-	readonly destinationZone: string;
-	readonly destinationIndex: number;
-	readonly data: PuckContentItem;
+  readonly type: "replace";
+  readonly destinationZone: string;
+  readonly destinationIndex: number;
+  readonly data: PuckContentItem;
 };
 
 // --- T2: compile-time Puck-shape drift detection ------------------
@@ -63,18 +63,18 @@ type PuckCoreReplaceAction = Extract<PuckCoreAction, { type: "replace" }>;
 // (content/zones/root), and a Puck `ComponentData` as our item shape.
 type _AssertData = Assert<PuckCoreData extends PuckData ? true : false>;
 type _AssertItem = Assert<
-	PuckCoreComponentData extends PuckContentItem ? true : false
+  PuckCoreComponentData extends PuckContentItem ? true : false
 >;
 // Puck's `replace` action must still carry the exact fields the
 // planner sets; a field rename here breaks the build.
 type _AssertReplace = Assert<
-	PuckCoreReplaceAction extends {
-		type: "replace";
-		destinationZone: string;
-		destinationIndex: number;
-	}
-		? true
-		: false
+  PuckCoreReplaceAction extends {
+    type: "replace";
+    destinationZone: string;
+    destinationIndex: number;
+  }
+    ? true
+    : false
 >;
 
 // Keep the assertions live (referenced) without emitting runtime code.

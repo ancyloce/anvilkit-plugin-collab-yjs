@@ -142,7 +142,7 @@ import { Doc as YDoc } from "yjs";
 const doc = new YDoc();
 const provider = new HocuspocusProvider({
   url: "wss://collab.example.com",
-  name: "demo-room",          // becomes Hocuspocus's `documentName`
+  name: "demo-room", // becomes Hocuspocus's `documentName`
   document: doc,
   token: await getAccessToken(), // verified by `onAuthenticate`
 });

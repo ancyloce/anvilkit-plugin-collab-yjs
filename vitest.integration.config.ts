@@ -6,15 +6,15 @@ import { defineConfig } from "vitest/config";
  * for the default unit suite. Run with `pnpm test:integration`.
  */
 export default defineConfig({
-	test: {
-		environment: "node",
-		globals: false,
-		clearMocks: true,
-		restoreMocks: true,
-		include: ["src/**/*.integration.{test,spec}.ts"],
-		exclude: ["**/node_modules/**", "**/dist/**"],
-		name: "@anvilkit/plugin-collab-yjs:integration",
-		passWithNoTests: true,
-		testTimeout: 30_000,
-	},
+  test: {
+    environment: "node",
+    globals: false,
+    clearMocks: true,
+    restoreMocks: true,
+    include: ["src/**/*.integration.{test,spec}.ts"],
+    exclude: ["**/node_modules/**", "**/dist/**"],
+    name: "@anvilkit/plugin-collab-yjs:integration",
+    passWithNoTests: true,
+    testTimeout: 30_000,
+  },
 });

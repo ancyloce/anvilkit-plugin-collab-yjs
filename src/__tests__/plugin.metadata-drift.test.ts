@@ -11,16 +11,16 @@ import { createCollabDataPlugin } from "../plugin.js";
  * `useNativeTree` / `localPeer` doc comments contradicting behavior.
  */
 describe("plugin metadata drift (M1)", () => {
-	it("META.version matches package.json version", () => {
-		const pkgPath = fileURLToPath(
-			new URL("../../package.json", import.meta.url),
-		);
-		const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
-			version: string;
-		};
-		const plugin = createCollabDataPlugin({
-			adapter: { save: () => "id", list: () => [], load: () => null as never },
-		});
-		expect(plugin.meta.version).toBe(pkg.version);
-	});
+  it("META.version matches package.json version", () => {
+    const pkgPath = fileURLToPath(
+      new URL("../../package.json", import.meta.url),
+    );
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+      version: string;
+    };
+    const plugin = createCollabDataPlugin({
+      adapter: { save: () => "id", list: () => [], load: () => null as never },
+    });
+    expect(plugin.meta.version).toBe(pkg.version);
+  });
 });
