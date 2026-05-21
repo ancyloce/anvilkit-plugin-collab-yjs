@@ -17,7 +17,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 let testCounter = 0;
 function freshDbName(): string {

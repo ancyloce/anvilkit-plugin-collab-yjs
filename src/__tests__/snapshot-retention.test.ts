@@ -11,8 +11,8 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
-import { SnapshotPrunedError } from "../snapshot-errors.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { SnapshotPrunedError } from "../utils/snapshot-errors.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function irWith(label: string): PageIR {
 	const base = createFakePageIR();

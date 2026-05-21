@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createDebouncedAdapter,
 	DebouncedAdapterDestroyedError,
-} from "../debounced-adapter.js";
+} from "../utils/debounced-adapter.js";
 
 interface RecordedAdapter extends SnapshotAdapter {
 	readonly saveCalls: number;

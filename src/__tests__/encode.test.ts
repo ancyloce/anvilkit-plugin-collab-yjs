@@ -11,7 +11,7 @@ import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 
-import { decodeIR, encodeIR, hashIR, hashNodeContent } from "../encode.js";
+import { decodeIR, encodeIR, hashIR, hashNodeContent } from "../utils/encode.js";
 
 describe("encodeIR", () => {
 	it("round-trips a PageIR losslessly", () => {

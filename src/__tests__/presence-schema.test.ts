@@ -7,7 +7,7 @@ import {
 	validatePresenceCursor,
 	validatePresenceSelection,
 	validatePresenceState,
-} from "../presence-schema.js";
+} from "../utils/presence-schema.js";
 
 describe("validatePeerInfo", () => {
 	it("accepts the minimum {id} shape", () => {

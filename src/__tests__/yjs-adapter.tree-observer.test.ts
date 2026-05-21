@@ -2,8 +2,8 @@ import type { PageIR } from "@anvilkit/core/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyUpdateV2, encodeStateAsUpdateV2, Doc as YDoc } from "yjs";
 
-import { decodeIR } from "../encode.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { decodeIR } from "../utils/encode.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function ir(rootId: string, title: string): PageIR {
 	return {

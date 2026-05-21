@@ -5,9 +5,9 @@ import type { Config } from "@puckeditor/core";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
-import { decodeIR, encodeIR } from "../encode.js";
-import { readNativeTree } from "../native-tree.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { decodeIR, encodeIR } from "../utils/encode.js";
+import { readNativeTree } from "../utils/native-tree.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 const STUB_CONFIG: Config = {
 	components: {

@@ -2,7 +2,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 /**
  * Coarse wall-clock guard so a CATASTROPHIC high-load regression fails

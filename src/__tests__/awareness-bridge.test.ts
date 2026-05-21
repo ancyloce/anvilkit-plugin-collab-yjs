@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import { Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 describe("awareness rate-limit (L3)", () => {
 	beforeEach(() => {

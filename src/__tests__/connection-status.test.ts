@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
 import type { ConnectionSource, ConnectionStatus } from "../types/types.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 describe("createYjsAdapter onStatusChange / connectionSource", () => {
 	it("starts in `connecting` and exposes the current status synchronously", () => {

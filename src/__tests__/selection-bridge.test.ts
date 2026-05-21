@@ -12,7 +12,7 @@
 import type { ComponentData as PuckComponentData } from "@puckeditor/core";
 import { describe, expect, it } from "vitest";
 
-import { selectPresenceSelection } from "../selection-bridge.js";
+import { selectPresenceSelection } from "../utils/selection-bridge.js";
 
 function withSelectedItem(props: Readonly<Record<string, unknown>>): {
 	readonly selectedItem: PuckComponentData;

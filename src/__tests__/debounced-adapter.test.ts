@@ -5,7 +5,7 @@ import type {
 } from "@anvilkit/plugin-version-history";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createDebouncedAdapter } from "../debounced-adapter.js";
+import { createDebouncedAdapter } from "../utils/debounced-adapter.js";
 
 function recordingAdapter(): SnapshotAdapter & {
 	readonly saveCalls: number;

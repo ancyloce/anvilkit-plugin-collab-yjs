@@ -24,7 +24,7 @@ vi.mock("@puckeditor/core", () => ({
 			selector(selectorState),
 }));
 
-import { usePuckSelection } from "../selection-bridge.js";
+import { usePuckSelection } from "../utils/selection-bridge.js";
 
 afterEach(() => {
 	selectorState = { selectedItem: null };

@@ -12,9 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import { applyUpdate, encodeStateAsUpdate, Doc as YDoc } from "yjs";
 
-import { createDebouncedAdapter } from "../debounced-adapter.js";
-import { createMetricsState } from "../metrics.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createDebouncedAdapter } from "../utils/debounced-adapter.js";
+import { createMetricsState } from "../utils/metrics.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
 	a.on("update", (u: Uint8Array, origin: unknown) => {

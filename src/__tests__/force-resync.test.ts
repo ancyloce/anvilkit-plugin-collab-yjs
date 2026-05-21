@@ -3,7 +3,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function withHero(headline: string): PageIR {
 	const ir = createFakePageIR();

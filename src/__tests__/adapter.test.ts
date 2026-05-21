@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 runAdapterContract(() => createYjsAdapter({ doc: new YDoc() }), {
 	describe,

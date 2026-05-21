@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import { applyUpdate, encodeStateAsUpdate, Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 interface AwarenessInternals {
 	readonly _observers: Map<string, unknown[]>;

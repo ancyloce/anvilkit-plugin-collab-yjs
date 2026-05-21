@@ -1,4 +1,4 @@
-import type { InboundSchedulerHandleScheduler } from "../../inbound-scheduler.js";
+import type { InboundSchedulerHandleScheduler } from "../../utils/inbound-scheduler.js";
 
 /**
  * Synchronous inbound scheduler for tests that assert dispatch

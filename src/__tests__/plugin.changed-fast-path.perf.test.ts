@@ -29,7 +29,7 @@ import { applyUpdate, Doc as YDoc } from "yjs";
 
 import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
 import type { CreateCollabPluginOptions } from "../types/types.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 import { syncInboundScheduler } from "./helpers/inbound.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;

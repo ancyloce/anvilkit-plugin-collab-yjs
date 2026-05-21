@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { nowMs } from "../metrics.js";
-import { createRemoteDispatchGuard } from "../remote-guard.js";
+import { nowMs } from "../utils/metrics.js";
+import { createRemoteDispatchGuard } from "../utils/remote-guard.js";
 
 describe("createRemoteDispatchGuard (H2)", () => {
 	it("is inactive until begin and active across re-entrant begins", () => {

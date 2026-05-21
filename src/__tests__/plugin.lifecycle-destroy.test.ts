@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createDebouncedAdapter,
 	DebouncedAdapterDestroyedError,
-} from "../debounced-adapter.js";
+} from "../utils/debounced-adapter.js";
 import { createCollabDataPlugin } from "../plugin.js";
 import { syncInboundScheduler } from "./helpers/inbound.js";
 

@@ -2,12 +2,12 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
-import { createLiveIRState } from "../live-ir.js";
+import { createLiveIRState } from "../utils/live-ir.js";
 import {
 	applyIRToNativeTree,
 	type ReadGuardTrip,
 	readNativeTree,
-} from "../native-tree.js";
+} from "../utils/native-tree.js";
 
 function ir(children: { id: string; title: string }[]): PageIR {
 	return {

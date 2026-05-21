@@ -15,7 +15,7 @@ import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, encodeStateAsUpdate, Doc as YDoc } from "yjs";
 
-import { applyIRToNativeTree, readNativeTree } from "../native-tree.js";
+import { applyIRToNativeTree, readNativeTree } from "../utils/native-tree.js";
 
 const TREE_MAP = "anvilkit-collab:tree";
 

@@ -1,7 +1,7 @@
 import type { PageIR } from "@anvilkit/core/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createInboundScheduler } from "../inbound-scheduler.js";
+import { createInboundScheduler } from "../utils/inbound-scheduler.js";
 import { manualInboundScheduler } from "./helpers/inbound.js";
 
 function ir(rootId: string): PageIR {

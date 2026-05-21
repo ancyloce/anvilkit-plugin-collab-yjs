@@ -15,9 +15,9 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
-import { hashNodeContent } from "../encode.js";
-import { diffIRNodesForLocalSave } from "../native-tree.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { hashNodeContent } from "../utils/encode.js";
+import { diffIRNodesForLocalSave } from "../utils/native-tree.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function doc(children: PageIR["root"]["children"]): PageIR {
 	return {

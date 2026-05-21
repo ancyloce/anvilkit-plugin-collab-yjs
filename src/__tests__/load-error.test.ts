@@ -6,8 +6,8 @@ import {
 	SnapshotCorruptedError,
 	SnapshotNotFoundError,
 	SnapshotPrunedError,
-} from "../snapshot-errors.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+} from "../utils/snapshot-errors.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 describe("createYjsAdapter load() error context (M7)", () => {
 	it("wraps decode failures with snapshot id and underlying cause", () => {

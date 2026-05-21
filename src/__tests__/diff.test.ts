@@ -9,8 +9,8 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
-import { diffSnapshots } from "../diff.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { diffSnapshots } from "../utils/diff.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function withHero(headline: string): PageIR {
 	const ir = createFakePageIR();

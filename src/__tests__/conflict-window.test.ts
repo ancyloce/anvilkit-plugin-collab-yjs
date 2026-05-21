@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { applyUpdate, encodeStateAsUpdate, Doc as YDoc } from "yjs";
 
 import type { ConflictEvent } from "../types/types.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
 	a.on("update", (u: Uint8Array, origin: unknown) => {

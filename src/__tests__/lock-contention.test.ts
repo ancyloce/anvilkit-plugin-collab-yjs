@@ -28,7 +28,7 @@ import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
 	a.on("update", (update: Uint8Array, origin: unknown) => {

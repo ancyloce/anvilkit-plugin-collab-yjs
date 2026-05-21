@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type ProjectionData,
 	projectChangedNodes,
-} from "../incremental-projection.js";
+} from "../utils/incremental-projection.js";
 
 function ir(children: PageIR["root"]["children"]): PageIR {
 	return {

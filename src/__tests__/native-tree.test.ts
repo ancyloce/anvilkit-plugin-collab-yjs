@@ -17,8 +17,8 @@ import {
 	NATIVE_ROOT_ID_KEY,
 	NATIVE_VERSION_KEY,
 	readNativeTree,
-} from "../native-tree.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+} from "../utils/native-tree.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {
 	a.on("update", (update: Uint8Array, origin: unknown) => {

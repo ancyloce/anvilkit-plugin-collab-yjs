@@ -10,10 +10,10 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { Doc as YDoc } from "yjs";
 
-import { encodeIR } from "../encode.js";
-import { DEFAULT_MAP_NAME, PAGE_IR_KEY } from "../keys.js";
-import { NATIVE_VERSION_KEY, readNativeTree } from "../native-tree.js";
-import { createYjsAdapter } from "../yjs-adapter.js";
+import { encodeIR } from "../utils/encode.js";
+import { DEFAULT_MAP_NAME, PAGE_IR_KEY } from "../utils/keys.js";
+import { NATIVE_VERSION_KEY, readNativeTree } from "../utils/native-tree.js";
+import { createYjsAdapter } from "../utils/yjs-adapter.js";
 
 function withHero(headline: string): PageIR {
 	const ir = createFakePageIR();

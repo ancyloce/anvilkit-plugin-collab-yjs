@@ -21,7 +21,7 @@ import {
 	createLocationIndex,
 	type ProjectionData,
 	projectChangedNodes,
-} from "../incremental-projection.js";
+} from "../utils/incremental-projection.js";
 
 function ir(children: PageIR["root"]["children"]): PageIR {
 	return {
