@@ -67,10 +67,18 @@ describe("plugin-collab-yjs high-load smoke", () => {
 		// the snapshot payload/pageIRHash (kept by contract). Observed
 		// well under 10ms/save after the fix; the previous 80ms/save
 		// (full O(document) native-apply) is the regression this floor
-		// now catches. 1500ms total is ~4× headroom over the observed
-		// ~350ms while still failing loudly if the O(document)
-		// native-apply is reintroduced (~4000ms+).
-		expect(elapsed).toBeLessThan(1500);
+		// now catches (~4000ms+ total).
+		//
+		// Budget is a CATASTROPHE FLOOR, not a precise gate (that's
+		// `bench/`). It must clear the regression target (~4000ms+) by a
+		// wide margin while tolerating the CPU oversubscription this file
+		// sees under the full `pnpm test` run: the sibling
+		// `plugin.changed-fast-path.perf.test.ts` (4× O(document) runs on
+		// a 2000-node doc, ~11s) executes in a parallel worker and starves
+		// this one — observed up to ~1640ms there vs ~350ms in isolation.
+		// 3000ms gives ~1.8× headroom over that contended observation and
+		// still fails loudly if O(document) native-apply is reintroduced.
+		expect(elapsed).toBeLessThan(3000);
 	});
 
 	it("applies 50 remote single-prop updates incrementally under budget", () => {
