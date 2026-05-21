@@ -1,8 +1,8 @@
-import type { DegradedReason, MetricsSnapshot, TimingKind } from "./types.js";
+import type { DegradedReason, MetricsSnapshot, TimingKind } from "../types/types.js";
 
 // Re-exported for existing importers (plugin.ts) — canonical home is
 // types.ts so metrics.ts and types.ts don't form an import cycle.
-export type { TimingKind } from "./types.js";
+export type { TimingKind } from "../types/types.js";
 
 /**
  * Process-monotonic sequence woven into snapshot ids immediately after

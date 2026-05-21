@@ -4,7 +4,7 @@ import type {
 	SnapshotMeta,
 } from "@anvilkit/plugin-version-history";
 
-import type { MetricsSnapshot } from "./types.js";
+import type { MetricsSnapshot } from "../types/types.js";
 
 export interface CreateDebouncedAdapterOptions {
 	/**

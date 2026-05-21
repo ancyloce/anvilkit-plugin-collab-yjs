@@ -1,7 +1,7 @@
 import type { PageIR } from "@anvilkit/core/types";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
-import type { RemoteChange } from "./types.js";
+import type { RemoteChange } from "../types/types.js";
 
 /**
  * Merge the change descriptors of a superseded and its superseding

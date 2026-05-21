@@ -27,7 +27,7 @@ import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
-import type { CreateCollabPluginOptions, PolicyViolation } from "../types.js";
+import type { CreateCollabPluginOptions, PolicyViolation } from "../types/types.js";
 import { syncInboundScheduler } from "./helpers/inbound.js";
 
 // All policy tests assert dispatch/log synchronously after

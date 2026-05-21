@@ -7,7 +7,7 @@ import type { Awareness } from "y-protocols/awareness";
 
 import { type MetricsState, nowMs } from "./metrics.js";
 import { validatePresenceState } from "./presence-schema.js";
-import type { AwarenessRateLimitOptions } from "./types.js";
+import type { AwarenessRateLimitOptions } from "../types/types.js";
 
 export interface AwarenessBridge {
   readonly presence: SnapshotAdapterPresence;

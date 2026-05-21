@@ -1,4 +1,4 @@
-import type { PersistenceOptions } from "../types.js";
+import type { PersistenceOptions } from "../types/types.js";
 import {
   type BroadcastBridge,
   createBroadcastBridge,

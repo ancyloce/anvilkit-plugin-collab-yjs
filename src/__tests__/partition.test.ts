@@ -25,7 +25,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
-import type { ConflictEvent } from "../types.js";
+import type { ConflictEvent } from "../types/types.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 /**

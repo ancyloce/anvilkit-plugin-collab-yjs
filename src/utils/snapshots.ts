@@ -36,7 +36,7 @@ import type {
   ConnectionStatus,
   RemoteAwareSubscriber,
   RemoteChange,
-} from "./types.js";
+} from "../types/types.js";
 
 export interface SnapshotsModuleOptions {
   readonly doc: Y.Doc;

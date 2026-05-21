@@ -20,7 +20,7 @@ import {
   NATIVE_VERSION_KEY,
   readNativeTree,
 } from "./native-tree.js";
-import { createPersistence } from "./persistence/index.js";
+import { createPersistence } from "../persistence/index.js";
 import { validatePeerInfo } from "./presence-schema.js";
 import { createSnapshots } from "./snapshots.js";
 import type {
@@ -28,7 +28,7 @@ import type {
   MetricsSnapshot,
   RemoteChange,
   YjsSnapshotAdapter,
-} from "./types.js";
+} from "../types/types.js";
 
 /**
  * Build a SnapshotAdapter v2 backed by a shared Y.Doc.

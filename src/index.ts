@@ -1,16 +1,16 @@
 export {
   DebouncedAdapterDestroyedError,
   createDebouncedAdapter,
-} from "./debounced-adapter.js";
-export { diffSnapshots } from "./diff.js";
-export { decodeIR, encodeIR, hashIR } from "./encode.js";
+} from "./utils/debounced-adapter.js";
+export { diffSnapshots } from "./utils/diff.js";
+export { decodeIR, encodeIR, hashIR } from "./utils/encode.js";
 export { createCollabDataPlugin, createCollabPlugin } from "./plugin.js";
-export { usePuckSelection } from "./selection-bridge.js";
+export { usePuckSelection } from "./utils/selection-bridge.js";
 export {
   SnapshotCorruptedError,
   SnapshotNotFoundError,
   SnapshotPrunedError,
-} from "./snapshot-errors.js";
+} from "./utils/snapshot-errors.js";
 export {
   MAX_DISPLAY_NAME_LENGTH,
   sanitizeDisplayName,
@@ -18,11 +18,11 @@ export {
   validatePresenceCursor,
   validatePresenceSelection,
   validatePresenceState,
-} from "./presence-schema.js";
+} from "./utils/presence-schema.js";
 export type {
   CreateDebouncedAdapterOptions,
   SnapshotAdapterWithMetrics,
-} from "./debounced-adapter.js";
+} from "./utils/debounced-adapter.js";
 export type {
   AwarenessRateLimitOptions,
   CollabPluginRuntime,
@@ -38,5 +38,5 @@ export type {
   ValidateRemoteIR,
   ValidationFailure,
   YjsSnapshotAdapter,
-} from "./types.js";
-export { createYjsAdapter } from "./yjs-adapter.js";
+} from "./types/types.js";
+export { createYjsAdapter } from "./utils/yjs-adapter.js";

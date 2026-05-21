@@ -25,7 +25,7 @@ import { applyUpdate, Doc as YDoc } from "yjs";
 
 import { createInboundScheduler } from "../inbound-scheduler.js";
 import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
-import type { CreateCollabPluginOptions, RemoteChange } from "../types.js";
+import type { CreateCollabPluginOptions, RemoteChange } from "../types/types.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 import {
   manualInboundScheduler,

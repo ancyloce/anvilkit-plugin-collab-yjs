@@ -29,7 +29,8 @@
 		}
 	},
 	"files": [
-		"dist"
+		"dist",
+		"meta"
 	],
 	"license": "MIT",
 	"sideEffects": false,
@@ -65,8 +66,8 @@
 	"scripts": {
 		"build": "rslib build",
 		"dev": "rslib build --watch",
-		"lint": "pnpm exec biome lint package.json tsconfig.json rslib.config.ts vitest.config.ts src",
-		"format": "pnpm exec biome check --write package.json tsconfig.json rslib.config.ts vitest.config.ts src",
+		"lint": "pnpm exec biome lint package.json tsconfig.json rslib.config.ts vitest.config.ts src meta",
+		"format": "pnpm exec biome check --write package.json tsconfig.json rslib.config.ts vitest.config.ts src meta",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",

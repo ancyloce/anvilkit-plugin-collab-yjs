@@ -1,6 +1,6 @@
 import type { Unsubscribe } from "@anvilkit/plugin-version-history";
 
-import type { ConnectionSource, ConnectionStatus } from "./types.js";
+import type { ConnectionSource, ConnectionStatus } from "./types/types.js";
 
 export interface ConnectionStatusModule {
   getStatus(): ConnectionStatus;

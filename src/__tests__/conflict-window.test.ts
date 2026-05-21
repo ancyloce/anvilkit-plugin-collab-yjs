@@ -3,7 +3,7 @@ import type { PageIR } from "@anvilkit/core/types";
 import { describe, expect, it, vi } from "vitest";
 import { applyUpdate, Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-import type { ConflictEvent } from "../types.js";
+import type { ConflictEvent } from "../types/types.js";
 import { createYjsAdapter } from "../yjs-adapter.js";
 
 function pair(a: YDoc, b: YDoc): void {

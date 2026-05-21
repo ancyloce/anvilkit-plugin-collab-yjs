@@ -14,7 +14,7 @@ import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { createCollabPlugin as baseCollabPlugin } from "../plugin.js";
-import type { CreateCollabPluginOptions } from "../types.js";
+import type { CreateCollabPluginOptions } from "../types/types.js";
 import { syncInboundScheduler } from "./helpers/inbound.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;
