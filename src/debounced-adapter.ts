@@ -76,7 +76,9 @@ export function createDebouncedAdapter(
 	const setTimer = options.setTimeout ?? setTimeout;
 	const clearTimer = options.clearTimeout ?? clearTimeout;
 
-	type TimerHandle = ReturnType<typeof setTimer>;
+	type TimerHandle =
+		| ReturnType<typeof setTimeout>
+		| ReturnType<NonNullable<CreateDebouncedAdapterOptions["setTimeout"]>>;
 
 	let pending: PendingSave | undefined;
 	let timer: TimerHandle | undefined;
@@ -140,7 +142,7 @@ export function createDebouncedAdapter(
 					pending = { ir, meta, resolvers: [resolve], rejecters: [reject] };
 				}
 				if (timer !== undefined) clearTimer(timer);
-				timer = setTimer(flush, ms);
+				timer = setTimer(flush, ms) as TimerHandle;
 			});
 		},
 		list: adapter.list.bind(adapter),
