@@ -4,5 +4,7 @@
 	"version": "0.10.0-rc.2",
 	"coreVersion": "^0.1.0-alpha",
 	"description": "GA-candidate realtime collaboration for Anvilkit Studio over a Yjs CRDT transport. Implements the SnapshotAdapter v2 contract with conflict diagnostics, validation, debouncing, an opt-in native Y.Map IR tree for per-node merge, a transport-agnostic connection-state contract, and force-resync.",
-	"apabilities": { "sidebar": true }
+	"apabilities": {
+		"header": true
+	}
 }
