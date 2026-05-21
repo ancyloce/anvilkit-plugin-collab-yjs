@@ -94,6 +94,6 @@
 		"typescript": "6.0.3",
 		"vitest": "^4.1.7",
 		"ws": "^8.20.0",
-		"y-websocket": "^2.1.0"
+		"y-websocket": "^3.0.0"
 	}
 }
