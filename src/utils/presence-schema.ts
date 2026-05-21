@@ -1,8 +1,8 @@
 import type {
-  PeerInfo,
-  PresenceCursor,
-  PresenceSelection,
-  PresenceState,
+	PeerInfo,
+	PresenceCursor,
+	PresenceSelection,
+	PresenceState,
 } from "@anvilkit/plugin-version-history";
 
 /**
@@ -32,40 +32,40 @@ import type {
 export const MAX_DISPLAY_NAME_LENGTH = 64;
 
 const COLOR_REGEX =
-  /^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{4}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\)|hsla\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*,\s*(0|1|0?\.\d+)\s*\))$/;
+	/^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{4}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\)|hsla\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*,\s*(0|1|0?\.\d+)\s*\))$/;
 
 const NAMED_COLOR_SET = new Set([
-  "transparent",
-  "currentcolor",
-  "black",
-  "white",
-  "red",
-  "green",
-  "blue",
-  "yellow",
-  "orange",
-  "purple",
-  "pink",
-  "gray",
-  "grey",
-  "brown",
-  "cyan",
-  "magenta",
-  "lime",
-  "navy",
-  "teal",
-  "olive",
-  "maroon",
-  "silver",
-  "gold",
-  "indigo",
-  "violet",
+	"transparent",
+	"currentcolor",
+	"black",
+	"white",
+	"red",
+	"green",
+	"blue",
+	"yellow",
+	"orange",
+	"purple",
+	"pink",
+	"gray",
+	"grey",
+	"brown",
+	"cyan",
+	"magenta",
+	"lime",
+	"navy",
+	"teal",
+	"olive",
+	"maroon",
+	"silver",
+	"gold",
+	"indigo",
+	"violet",
 ]);
 
 function isValidColor(value: string): boolean {
-  if (value.length === 0 || value.length > 32) return false;
-  if (COLOR_REGEX.test(value)) return true;
-  return NAMED_COLOR_SET.has(value.toLowerCase());
+	if (value.length === 0 || value.length > 32) return false;
+	if (COLOR_REGEX.test(value)) return true;
+	return NAMED_COLOR_SET.has(value.toLowerCase());
 }
 
 /**
@@ -75,64 +75,64 @@ function isValidColor(value: string): boolean {
  * escaping; this helper only blunts the control-character injection sink.
  */
 export function sanitizeDisplayName(value: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: this helper's purpose is to strip those exact characters
-  const stripped = value.replace(/[\u0000-\u001f\u007f]/g, "");
-  if (stripped.length <= MAX_DISPLAY_NAME_LENGTH) return stripped;
-  return stripped.slice(0, MAX_DISPLAY_NAME_LENGTH);
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: this helper's purpose is to strip those exact characters
+	const stripped = value.replace(/[\u0000-\u001f\u007f]/g, "");
+	if (stripped.length <= MAX_DISPLAY_NAME_LENGTH) return stripped;
+	return stripped.slice(0, MAX_DISPLAY_NAME_LENGTH);
 }
 
 export function validatePeerInfo(value: unknown): PeerInfo | null {
-  if (!isObject(value)) return null;
-  if (typeof value.id !== "string" || value.id.length === 0) return null;
-  if (value.displayName !== undefined) {
-    if (typeof value.displayName !== "string") return null;
-  }
-  if (value.color !== undefined) {
-    if (typeof value.color !== "string") return null;
-    if (!isValidColor(value.color)) return null;
-  }
-  const sanitized: Record<string, unknown> = { id: value.id };
-  if (typeof value.displayName === "string") {
-    sanitized.displayName = sanitizeDisplayName(value.displayName);
-  }
-  if (typeof value.color === "string") sanitized.color = value.color;
-  return sanitized as unknown as PeerInfo;
+	if (!isObject(value)) return null;
+	if (typeof value.id !== "string" || value.id.length === 0) return null;
+	if (value.displayName !== undefined) {
+		if (typeof value.displayName !== "string") return null;
+	}
+	if (value.color !== undefined) {
+		if (typeof value.color !== "string") return null;
+		if (!isValidColor(value.color)) return null;
+	}
+	const sanitized: Record<string, unknown> = { id: value.id };
+	if (typeof value.displayName === "string") {
+		sanitized.displayName = sanitizeDisplayName(value.displayName);
+	}
+	if (typeof value.color === "string") sanitized.color = value.color;
+	return sanitized as unknown as PeerInfo;
 }
 
 export function validatePresenceCursor(value: unknown): PresenceCursor | null {
-  if (!isObject(value)) return null;
-  if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
-  return value as unknown as PresenceCursor;
+	if (!isObject(value)) return null;
+	if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
+	return value as unknown as PresenceCursor;
 }
 
 export function validatePresenceSelection(
-  value: unknown,
+	value: unknown,
 ): PresenceSelection | null {
-  if (!isObject(value)) return null;
-  const { nodeIds } = value;
-  if (!Array.isArray(nodeIds)) return null;
-  if (!nodeIds.every((id) => typeof id === "string")) return null;
-  return value as unknown as PresenceSelection;
+	if (!isObject(value)) return null;
+	const { nodeIds } = value;
+	if (!Array.isArray(nodeIds)) return null;
+	if (!nodeIds.every((id) => typeof id === "string")) return null;
+	return value as unknown as PresenceSelection;
 }
 
 export function validatePresenceState(value: unknown): PresenceState | null {
-  if (!isObject(value)) return null;
-  if (validatePeerInfo(value.peer) === null) return null;
-  if (
-    value.cursor !== undefined &&
-    validatePresenceCursor(value.cursor) === null
-  ) {
-    return null;
-  }
-  if (
-    value.selection !== undefined &&
-    validatePresenceSelection(value.selection) === null
-  ) {
-    return null;
-  }
-  return value as unknown as PresenceState;
+	if (!isObject(value)) return null;
+	if (validatePeerInfo(value.peer) === null) return null;
+	if (
+		value.cursor !== undefined &&
+		validatePresenceCursor(value.cursor) === null
+	) {
+		return null;
+	}
+	if (
+		value.selection !== undefined &&
+		validatePresenceSelection(value.selection) === null
+	) {
+		return null;
+	}
+	return value as unknown as PresenceState;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }

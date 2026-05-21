@@ -13,50 +13,50 @@
  *   forces a downgrade mid-session.
  */
 export interface StorageBackend {
-  /**
-   * Append one Y.js update payload to the durable queue. Returns once
-   * the backend has accepted the write — for IDB this means the put()
-   * resolved; for the null backend this is synchronous.
-   *
-   * Implementations MUST NOT throw on quota errors — they must signal
-   * the failure via the `onFault` callback and downgrade subsequent
-   * writes to no-ops. Throwing would poison the Y.Doc observer.
-   */
-  append(update: Uint8Array): Promise<void>;
+	/**
+	 * Append one Y.js update payload to the durable queue. Returns once
+	 * the backend has accepted the write — for IDB this means the put()
+	 * resolved; for the null backend this is synchronous.
+	 *
+	 * Implementations MUST NOT throw on quota errors — they must signal
+	 * the failure via the `onFault` callback and downgrade subsequent
+	 * writes to no-ops. Throwing would poison the Y.Doc observer.
+	 */
+	append(update: Uint8Array): Promise<void>;
 
-  /**
-   * Read every queued update in insertion order, then atomically
-   * clear the store. Used on reconnect to flush the offline queue
-   * back into the live Y.Doc.
-   */
-  drain(): Promise<readonly Uint8Array[]>;
+	/**
+	 * Read every queued update in insertion order, then atomically
+	 * clear the store. Used on reconnect to flush the offline queue
+	 * back into the live Y.Doc.
+	 */
+	drain(): Promise<readonly Uint8Array[]>;
 
-  /**
-   * Read every queued update without clearing the store. Used on
-   * adapter construction to hydrate the Y.Doc with leftover updates
-   * from a prior session before the first `subscribe()` fires.
-   */
-  hydrate(): Promise<readonly Uint8Array[]>;
+	/**
+	 * Read every queued update without clearing the store. Used on
+	 * adapter construction to hydrate the Y.Doc with leftover updates
+	 * from a prior session before the first `subscribe()` fires.
+	 */
+	hydrate(): Promise<readonly Uint8Array[]>;
 
-  /**
-   * R2 — crash-safe compaction. Reads the current backlog, hands it to
-   * `merge` (the caller folds it into one equivalent update), then
-   * **durably commits the merged blob BEFORE deleting the source
-   * rows**. A crash between the two leaves the merged blob plus the
-   * originals — a recoverable superset (Y.js `applyUpdateV2` is
-   * commutative and idempotent over merged ∪ originals) — never an
-   * empty store. `merge` returning `undefined` (≤1 row) is a no-op.
-   * MUST NOT throw on fault — downgrade like `append()`.
-   */
-  compact(
-    merge: (all: readonly Uint8Array[]) => Uint8Array | undefined,
-  ): Promise<void>;
+	/**
+	 * R2 — crash-safe compaction. Reads the current backlog, hands it to
+	 * `merge` (the caller folds it into one equivalent update), then
+	 * **durably commits the merged blob BEFORE deleting the source
+	 * rows**. A crash between the two leaves the merged blob plus the
+	 * originals — a recoverable superset (Y.js `applyUpdateV2` is
+	 * commutative and idempotent over merged ∪ originals) — never an
+	 * empty store. `merge` returning `undefined` (≤1 row) is a no-op.
+	 * MUST NOT throw on fault — downgrade like `append()`.
+	 */
+	compact(
+		merge: (all: readonly Uint8Array[]) => Uint8Array | undefined,
+	): Promise<void>;
 
-  /** Current number of entries in the store. Synchronous best-effort. */
-  size(): number;
+	/** Current number of entries in the store. Synchronous best-effort. */
+	size(): number;
 
-  /** Release any underlying handles (IDB connection, in-memory state). */
-  destroy(): void;
+	/** Release any underlying handles (IDB connection, in-memory state). */
+	destroy(): void;
 }
 
 /**
@@ -65,24 +65,24 @@ export interface StorageBackend {
  * the adapter keeps running without a durable queue.
  */
 export function createNullBackend(): StorageBackend {
-  return {
-    async append(): Promise<void> {
-      // no-op
-    },
-    async drain(): Promise<readonly Uint8Array[]> {
-      return [];
-    },
-    async hydrate(): Promise<readonly Uint8Array[]> {
-      return [];
-    },
-    async compact(): Promise<void> {
-      // no-op
-    },
-    size(): number {
-      return 0;
-    },
-    destroy(): void {
-      // no-op
-    },
-  };
+	return {
+		async append(): Promise<void> {
+			// no-op
+		},
+		async drain(): Promise<readonly Uint8Array[]> {
+			return [];
+		},
+		async hydrate(): Promise<readonly Uint8Array[]> {
+			return [];
+		},
+		async compact(): Promise<void> {
+			// no-op
+		},
+		size(): number {
+			return 0;
+		},
+		destroy(): void {
+			// no-op
+		},
+	};
 }

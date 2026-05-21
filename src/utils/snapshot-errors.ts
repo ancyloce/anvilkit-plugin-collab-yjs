@@ -11,17 +11,17 @@
  */
 
 abstract class SnapshotError extends Error {
-  /** The snapshot id the failed `load()` targeted. */
-  readonly id: string;
-  constructor(id: string, message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.id = id;
-  }
+	/** The snapshot id the failed `load()` targeted. */
+	readonly id: string;
+	constructor(id: string, message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.id = id;
+	}
 }
 
 /** No snapshot with this id exists in the shared Y.Doc. */
 export class SnapshotNotFoundError extends SnapshotError {
-  override readonly name = "SnapshotNotFoundError";
+	override readonly name = "SnapshotNotFoundError";
 }
 
 /**
@@ -36,7 +36,7 @@ export class SnapshotNotFoundError extends SnapshotError {
  * corruption.
  */
 export class SnapshotPrunedError extends SnapshotError {
-  override readonly name = "SnapshotPrunedError";
+	override readonly name = "SnapshotPrunedError";
 }
 
 /**
@@ -46,5 +46,5 @@ export class SnapshotPrunedError extends SnapshotError {
  * synchronous transaction, indicates corruption, not eviction).
  */
 export class SnapshotCorruptedError extends SnapshotError {
-  override readonly name = "SnapshotCorruptedError";
+	override readonly name = "SnapshotCorruptedError";
 }

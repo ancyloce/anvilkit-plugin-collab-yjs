@@ -13,13 +13,13 @@ import type { RemoteChange } from "../types/types.js";
  * data.
  */
 function mergeRemoteChange(
-  a: RemoteChange | undefined,
-  b: RemoteChange | undefined,
+	a: RemoteChange | undefined,
+	b: RemoteChange | undefined,
 ): RemoteChange | undefined {
-  if (a === undefined || b === undefined) return undefined;
-  const ids = new Set<string>(a.ids);
-  for (const id of b.ids) ids.add(id);
-  return { ids, structural: a.structural || b.structural };
+	if (a === undefined || b === undefined) return undefined;
+	const ids = new Set<string>(a.ids);
+	for (const id of b.ids) ids.add(id);
+	return { ids, structural: a.structural || b.structural };
 }
 
 /**
@@ -42,60 +42,60 @@ function mergeRemoteChange(
  * with `onInit` so hosts (and tests) see post-init state immediately.
  */
 export interface InboundScheduler {
-  /** Buffer the latest remote IR for `roomKey` (latest-wins). */
-  enqueue(
-    roomKey: string,
-    ir: PageIR,
-    peer: PeerInfo | undefined,
-    changed?: RemoteChange,
-  ): void;
-  /** Synchronously drain (a single room, or all). Used by tests/teardown. */
-  flushNow(roomKey?: string): void;
-  /** Cancel the pending frame and drop all buffers. */
-  destroy(): void;
+	/** Buffer the latest remote IR for `roomKey` (latest-wins). */
+	enqueue(
+		roomKey: string,
+		ir: PageIR,
+		peer: PeerInfo | undefined,
+		changed?: RemoteChange,
+	): void;
+	/** Synchronously drain (a single room, or all). Used by tests/teardown. */
+	flushNow(roomKey?: string): void;
+	/** Cancel the pending frame and drop all buffers. */
+	destroy(): void;
 }
 
 export interface InboundSchedulerHandleScheduler {
-  request(cb: () => void): unknown;
-  cancel(handle: unknown): void;
+	request(cb: () => void): unknown;
+	cancel(handle: unknown): void;
 }
 
 export interface CreateInboundSchedulerOptions {
-  /**
-   * Called with the winning IR for a room when the buffer flushes.
-   * `queueDelayMs` is the wall time the IR waited in the buffer.
-   */
-  readonly flush: (
-    roomKey: string,
-    ir: PageIR,
-    peer: PeerInfo | undefined,
-    queueDelayMs: number,
-    changed: RemoteChange | undefined,
-  ) => void;
-  /** Reports the number of IRs dropped by coalescing (to metrics). */
-  readonly onCoalesced?: (count: number) => void;
-  /** Fallback cadence (ms) when `requestAnimationFrame` is absent. */
-  readonly budgetMs?: number;
-  /**
-   * Scheduler override. Defaults to `requestAnimationFrame` when
-   * available, else `setTimeout(budgetMs)`. Tests inject a manual
-   * scheduler so flushes are deterministic.
-   */
-  readonly scheduler?: InboundSchedulerHandleScheduler;
+	/**
+	 * Called with the winning IR for a room when the buffer flushes.
+	 * `queueDelayMs` is the wall time the IR waited in the buffer.
+	 */
+	readonly flush: (
+		roomKey: string,
+		ir: PageIR,
+		peer: PeerInfo | undefined,
+		queueDelayMs: number,
+		changed: RemoteChange | undefined,
+	) => void;
+	/** Reports the number of IRs dropped by coalescing (to metrics). */
+	readonly onCoalesced?: (count: number) => void;
+	/** Fallback cadence (ms) when `requestAnimationFrame` is absent. */
+	readonly budgetMs?: number;
+	/**
+	 * Scheduler override. Defaults to `requestAnimationFrame` when
+	 * available, else `setTimeout(budgetMs)`. Tests inject a manual
+	 * scheduler so flushes are deterministic.
+	 */
+	readonly scheduler?: InboundSchedulerHandleScheduler;
 }
 
 interface BufferedEntry {
-  ir: PageIR;
-  peer: PeerInfo | undefined;
-  firstEnqueuedAt: number;
-  changed: RemoteChange | undefined;
+	ir: PageIR;
+	peer: PeerInfo | undefined;
+	firstEnqueuedAt: number;
+	changed: RemoteChange | undefined;
 }
 
 const DEFAULT_BUDGET_MS = 16;
 
 interface RacedHandle {
-  raf?: number;
-  timer?: ReturnType<typeof setTimeout>;
+	raf?: number;
+	timer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -111,104 +111,104 @@ interface RacedHandle {
 const FAILSAFE_FLOOR_MS = 250;
 
 function defaultScheduler(budgetMs: number): InboundSchedulerHandleScheduler {
-  if (typeof requestAnimationFrame === "function") {
-    const failsafeMs = Math.max(budgetMs, FAILSAFE_FLOOR_MS);
-    return {
-      request: (cb) => {
-        const handle: RacedHandle = {};
-        let fired = false;
-        const fire = () => {
-          if (fired) return;
-          fired = true;
-          if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
-          if (handle.timer !== undefined) clearTimeout(handle.timer);
-          cb();
-        };
-        handle.raf = requestAnimationFrame(fire);
-        handle.timer = setTimeout(fire, failsafeMs);
-        return handle;
-      },
-      cancel: (h) => {
-        const handle = h as RacedHandle;
-        if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
-        if (handle.timer !== undefined) clearTimeout(handle.timer);
-      },
-    };
-  }
-  return {
-    request: (cb) => setTimeout(cb, budgetMs),
-    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-  };
+	if (typeof requestAnimationFrame === "function") {
+		const failsafeMs = Math.max(budgetMs, FAILSAFE_FLOOR_MS);
+		return {
+			request: (cb) => {
+				const handle: RacedHandle = {};
+				let fired = false;
+				const fire = () => {
+					if (fired) return;
+					fired = true;
+					if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
+					if (handle.timer !== undefined) clearTimeout(handle.timer);
+					cb();
+				};
+				handle.raf = requestAnimationFrame(fire);
+				handle.timer = setTimeout(fire, failsafeMs);
+				return handle;
+			},
+			cancel: (h) => {
+				const handle = h as RacedHandle;
+				if (handle.raf !== undefined) cancelAnimationFrame(handle.raf);
+				if (handle.timer !== undefined) clearTimeout(handle.timer);
+			},
+		};
+	}
+	return {
+		request: (cb) => setTimeout(cb, budgetMs),
+		cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	};
 }
 
 export function createInboundScheduler(
-  options: CreateInboundSchedulerOptions,
+	options: CreateInboundSchedulerOptions,
 ): InboundScheduler {
-  const budgetMs = options.budgetMs ?? DEFAULT_BUDGET_MS;
-  const scheduler = options.scheduler ?? defaultScheduler(budgetMs);
-  const buffers = new Map<string, BufferedEntry>();
-  let handle: unknown;
-  let scheduled = false;
-  let destroyed = false;
+	const budgetMs = options.budgetMs ?? DEFAULT_BUDGET_MS;
+	const scheduler = options.scheduler ?? defaultScheduler(budgetMs);
+	const buffers = new Map<string, BufferedEntry>();
+	let handle: unknown;
+	let scheduled = false;
+	let destroyed = false;
 
-  function drainRoom(roomKey: string): void {
-    const entry = buffers.get(roomKey);
-    if (!entry) return;
-    buffers.delete(roomKey);
-    const queueDelayMs = Math.max(0, Date.now() - entry.firstEnqueuedAt);
-    options.flush(roomKey, entry.ir, entry.peer, queueDelayMs, entry.changed);
-  }
+	function drainRoom(roomKey: string): void {
+		const entry = buffers.get(roomKey);
+		if (!entry) return;
+		buffers.delete(roomKey);
+		const queueDelayMs = Math.max(0, Date.now() - entry.firstEnqueuedAt);
+		options.flush(roomKey, entry.ir, entry.peer, queueDelayMs, entry.changed);
+	}
 
-  function onFrame(): void {
-    scheduled = false;
-    handle = undefined;
-    if (destroyed) return;
-    // Snapshot keys first: a flush callback could re-enqueue.
-    for (const roomKey of [...buffers.keys()]) drainRoom(roomKey);
-  }
+	function onFrame(): void {
+		scheduled = false;
+		handle = undefined;
+		if (destroyed) return;
+		// Snapshot keys first: a flush callback could re-enqueue.
+		for (const roomKey of [...buffers.keys()]) drainRoom(roomKey);
+	}
 
-  function ensureScheduled(): void {
-    if (scheduled || destroyed) return;
-    scheduled = true;
-    handle = scheduler.request(onFrame);
-  }
+	function ensureScheduled(): void {
+		if (scheduled || destroyed) return;
+		scheduled = true;
+		handle = scheduler.request(onFrame);
+	}
 
-  return {
-    enqueue(roomKey, ir, peer, changed): void {
-      if (destroyed) return;
-      const existing = buffers.get(roomKey);
-      if (existing) {
-        // The previously buffered IR for this room never made it
-        // to Puck — it is superseded and dropped. The winning
-        // flush must still apply the union of every node both
-        // the dropped and the winning update touched.
-        options.onCoalesced?.(1);
-        existing.changed = mergeRemoteChange(existing.changed, changed);
-        existing.ir = ir;
-        existing.peer = peer;
-      } else {
-        buffers.set(roomKey, {
-          ir,
-          peer,
-          firstEnqueuedAt: Date.now(),
-          changed,
-        });
-      }
-      ensureScheduled();
-    },
-    flushNow(roomKey?: string): void {
-      if (roomKey !== undefined) {
-        drainRoom(roomKey);
-        return;
-      }
-      for (const key of [...buffers.keys()]) drainRoom(key);
-    },
-    destroy(): void {
-      destroyed = true;
-      if (handle !== undefined) scheduler.cancel(handle);
-      handle = undefined;
-      scheduled = false;
-      buffers.clear();
-    },
-  };
+	return {
+		enqueue(roomKey, ir, peer, changed): void {
+			if (destroyed) return;
+			const existing = buffers.get(roomKey);
+			if (existing) {
+				// The previously buffered IR for this room never made it
+				// to Puck — it is superseded and dropped. The winning
+				// flush must still apply the union of every node both
+				// the dropped and the winning update touched.
+				options.onCoalesced?.(1);
+				existing.changed = mergeRemoteChange(existing.changed, changed);
+				existing.ir = ir;
+				existing.peer = peer;
+			} else {
+				buffers.set(roomKey, {
+					ir,
+					peer,
+					firstEnqueuedAt: Date.now(),
+					changed,
+				});
+			}
+			ensureScheduled();
+		},
+		flushNow(roomKey?: string): void {
+			if (roomKey !== undefined) {
+				drainRoom(roomKey);
+				return;
+			}
+			for (const key of [...buffers.keys()]) drainRoom(key);
+		},
+		destroy(): void {
+			destroyed = true;
+			if (handle !== undefined) scheduler.cancel(handle);
+			handle = undefined;
+			scheduled = false;
+			buffers.clear();
+		},
+	};
 }

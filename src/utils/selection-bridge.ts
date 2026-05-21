@@ -19,8 +19,8 @@
 
 import type { PresenceSelection } from "@anvilkit/plugin-version-history";
 import {
-  createUsePuck,
-  type ComponentData as PuckComponentData,
+	createUsePuck,
+	type ComponentData as PuckComponentData,
 } from "@puckeditor/core";
 import { useMemo } from "react";
 
@@ -32,10 +32,10 @@ type PuckSelectorHook = <T>(selector: (state: PuckSelectorState) => T) => T;
 // stub `createUsePuck`) don't blow up at module-evaluate time.
 let _usePuckSelection: PuckSelectorHook | null = null;
 function getUsePuckSelection(): PuckSelectorHook {
-  if (_usePuckSelection === null) {
-    _usePuckSelection = createUsePuck() as unknown as PuckSelectorHook;
-  }
-  return _usePuckSelection;
+	if (_usePuckSelection === null) {
+		_usePuckSelection = createUsePuck() as unknown as PuckSelectorHook;
+	}
+	return _usePuckSelection;
 }
 
 /**
@@ -64,13 +64,13 @@ function getUsePuckSelection(): PuckSelectorHook {
  * ```
  */
 export function usePuckSelection(): PresenceSelection | null {
-  const usePuckSelection = getUsePuckSelection();
-  // Select the primitive id: `Object.is` over a string is stable, so
-  // the underlying store subscription only re-renders this hook when
-  // the SELECTED NODE actually changes — not on every unrelated Puck
-  // state mutation.
-  const id = usePuckSelection(selectSelectedId);
-  return useMemo(() => (id === null ? null : { nodeIds: [id] }), [id]);
+	const usePuckSelection = getUsePuckSelection();
+	// Select the primitive id: `Object.is` over a string is stable, so
+	// the underlying store subscription only re-renders this hook when
+	// the SELECTED NODE actually changes — not on every unrelated Puck
+	// state mutation.
+	const id = usePuckSelection(selectSelectedId);
+	return useMemo(() => (id === null ? null : { nodeIds: [id] }), [id]);
 }
 
 /**
@@ -79,9 +79,9 @@ export function usePuckSelection(): PresenceSelection | null {
  * compares with `Object.is`.
  */
 export function selectSelectedId(state: PuckSelectorState): string | null {
-  const item = state.selectedItem;
-  if (item === null) return null;
-  return readId(item) ?? null;
+	const item = state.selectedItem;
+	if (item === null) return null;
+	return readId(item) ?? null;
 }
 
 /**
@@ -92,13 +92,13 @@ export function selectSelectedId(state: PuckSelectorState): string | null {
  * and is not reference-stable by design.
  */
 export function selectPresenceSelection(
-  state: PuckSelectorState,
+	state: PuckSelectorState,
 ): PresenceSelection | null {
-  const id = selectSelectedId(state);
-  return id === null ? null : { nodeIds: [id] };
+	const id = selectSelectedId(state);
+	return id === null ? null : { nodeIds: [id] };
 }
 
 function readId(item: PuckComponentData): string | undefined {
-  const props = item.props as { readonly id?: unknown };
-  return typeof props.id === "string" ? props.id : undefined;
+	const props = item.props as { readonly id?: unknown };
+	return typeof props.id === "string" ? props.id : undefined;
 }

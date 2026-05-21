@@ -1,8 +1,7 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type { PeerInfo, Unsubscribe } from "@anvilkit/plugin-version-history";
-
-import { nowMs } from "./metrics.js";
 import type { ConflictEvent } from "../types/types.js";
+import { nowMs } from "./metrics.js";
 
 export interface ConflictModule {
 	onConflict(callback: (event: ConflictEvent) => void): Unsubscribe;

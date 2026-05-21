@@ -13,5 +13,5 @@ import { diffIR, type IRDiff } from "@anvilkit/plugin-version-history";
  * undo-stack replay) can call this directly.
  */
 export function diffSnapshots(previous: PageIR, next: PageIR): IRDiff {
-  return diffIR(previous, next);
+	return diffIR(previous, next);
 }

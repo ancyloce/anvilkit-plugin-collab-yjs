@@ -8,15 +8,15 @@ import type { InboundSchedulerHandleScheduler } from "../../inbound-scheduler.js
  * covered by `inbound-scheduler.test.ts` with a manual pump scheduler.
  */
 export function syncInboundScheduler(): InboundSchedulerHandleScheduler {
-  return {
-    request: (cb) => {
-      cb();
-      return 0;
-    },
-    cancel: () => {
-      /* nothing to cancel — request ran inline */
-    },
-  };
+	return {
+		request: (cb) => {
+			cb();
+			return 0;
+		},
+		cancel: () => {
+			/* nothing to cancel — request ran inline */
+		},
+	};
 }
 
 /**
@@ -25,26 +25,26 @@ export function syncInboundScheduler(): InboundSchedulerHandleScheduler {
  * coalesce into a single dispatch.
  */
 export function manualInboundScheduler(): {
-  scheduler: InboundSchedulerHandleScheduler;
-  flush: () => void;
-  pending: () => number;
+	scheduler: InboundSchedulerHandleScheduler;
+	flush: () => void;
+	pending: () => number;
 } {
-  const queue: (() => void)[] = [];
-  return {
-    scheduler: {
-      request: (cb) => {
-        queue.push(cb);
-        return queue.length;
-      },
-      cancel: () => {
-        queue.length = 0;
-      },
-    },
-    flush: () => {
-      const callbacks = [...queue];
-      queue.length = 0;
-      for (const cb of callbacks) cb();
-    },
-    pending: () => queue.length,
-  };
+	const queue: (() => void)[] = [];
+	return {
+		scheduler: {
+			request: (cb) => {
+				queue.push(cb);
+				return queue.length;
+			},
+			cancel: () => {
+				queue.length = 0;
+			},
+		},
+		flush: () => {
+			const callbacks = [...queue];
+			queue.length = 0;
+			for (const cb of callbacks) cb();
+		},
+		pending: () => queue.length,
+	};
 }

@@ -4,12 +4,12 @@ import * as Y from "yjs";
 import { hashNodeContent } from "./encode.js";
 
 import {
-  NATIVE_ASSETS_KEY,
-  NATIVE_METADATA_KEY,
-  NATIVE_NODE_PREFIX,
-  NATIVE_ROOT_ID_KEY,
-  NATIVE_VERSION_KEY,
-  nativeNodeKey,
+	NATIVE_ASSETS_KEY,
+	NATIVE_METADATA_KEY,
+	NATIVE_NODE_PREFIX,
+	NATIVE_ROOT_ID_KEY,
+	NATIVE_VERSION_KEY,
+	nativeNodeKey,
 } from "./keys.js";
 
 /**
@@ -46,11 +46,11 @@ import {
 // callers that imported them from this module (e.g. test files).
 // The canonical home is `./keys.ts` (M8).
 export {
-  NATIVE_ASSETS_KEY,
-  NATIVE_METADATA_KEY,
-  NATIVE_NODE_PREFIX,
-  NATIVE_ROOT_ID_KEY,
-  NATIVE_VERSION_KEY,
+	NATIVE_ASSETS_KEY,
+	NATIVE_METADATA_KEY,
+	NATIVE_NODE_PREFIX,
+	NATIVE_ROOT_ID_KEY,
+	NATIVE_VERSION_KEY,
 } from "./keys.js";
 
 interface NodeYMap extends Y.Map<unknown> {}
@@ -63,42 +63,42 @@ interface NodeYMap extends Y.Map<unknown> {}
 // (the existing write-path behaviour, unchanged).
 
 function getNodeMap(root: Y.Map<unknown>, id: string): NodeYMap | undefined {
-  const m = root.get(nativeNodeKey(id));
-  return m instanceof Y.Map ? (m as NodeYMap) : undefined;
+	const m = root.get(nativeNodeKey(id));
+	return m instanceof Y.Map ? (m as NodeYMap) : undefined;
 }
 
 function getOrCreateNodeMap(root: Y.Map<unknown>, key: string): NodeYMap {
-  const existing = root.get(key);
-  if (existing instanceof Y.Map) return existing as NodeYMap;
-  const created = new Y.Map<unknown>();
-  root.set(key, created);
-  return created as NodeYMap;
+	const existing = root.get(key);
+	if (existing instanceof Y.Map) return existing as NodeYMap;
+	const created = new Y.Map<unknown>();
+	root.set(key, created);
+	return created as NodeYMap;
 }
 
 function getPropsMap(nodeMap: Y.Map<unknown>): Y.Map<unknown> | undefined {
-  const p = nodeMap.get("props");
-  return p instanceof Y.Map ? (p as Y.Map<unknown>) : undefined;
+	const p = nodeMap.get("props");
+	return p instanceof Y.Map ? (p as Y.Map<unknown>) : undefined;
 }
 
 function getOrCreatePropsMap(nodeMap: Y.Map<unknown>): Y.Map<unknown> {
-  const existing = nodeMap.get("props");
-  if (existing instanceof Y.Map) return existing as Y.Map<unknown>;
-  const created = new Y.Map<unknown>();
-  nodeMap.set("props", created);
-  return created;
+	const existing = nodeMap.get("props");
+	if (existing instanceof Y.Map) return existing as Y.Map<unknown>;
+	const created = new Y.Map<unknown>();
+	nodeMap.set("props", created);
+	return created;
 }
 
 function getChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> | undefined {
-  const c = nodeMap.get("childIds");
-  return c instanceof Y.Array ? (c as Y.Array<string>) : undefined;
+	const c = nodeMap.get("childIds");
+	return c instanceof Y.Array ? (c as Y.Array<string>) : undefined;
 }
 
 function getOrCreateChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> {
-  const existing = nodeMap.get("childIds");
-  if (existing instanceof Y.Array) return existing as Y.Array<string>;
-  const created = new Y.Array<string>();
-  nodeMap.set("childIds", created);
-  return created;
+	const existing = nodeMap.get("childIds");
+	if (existing instanceof Y.Array) return existing as Y.Array<string>;
+	const created = new Y.Array<string>();
+	nodeMap.set("childIds", created);
+	return created;
 }
 
 /**
@@ -110,81 +110,81 @@ function getOrCreateChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> {
 export type ReadGuardTrip = "cycle" | "max-depth" | "max-nodes";
 
 export interface ReadGuardOptions {
-  /** Maximum tree depth before bailing. Default 5000. */
-  readonly maxDepth?: number;
-  /** Maximum total node count before bailing. Default 200000. */
-  readonly maxNodes?: number;
-  /**
-   * Invoked once per read the first time any guard trips. Hosts wire
-   * this to `metrics.setDegraded(true)` so a truncated decode surfaces
-   * instead of silently dropping nodes.
-   */
-  readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
+	/** Maximum tree depth before bailing. Default 5000. */
+	readonly maxDepth?: number;
+	/** Maximum total node count before bailing. Default 200000. */
+	readonly maxNodes?: number;
+	/**
+	 * Invoked once per read the first time any guard trips. Hosts wire
+	 * this to `metrics.setDegraded(true)` so a truncated decode surfaces
+	 * instead of silently dropping nodes.
+	 */
+	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
 }
 
 const DEFAULT_MAX_DEPTH = 5000;
 const DEFAULT_MAX_NODES = 200000;
 
 interface ReadGuard {
-  readonly visited: Set<string>;
-  count: number;
-  readonly maxDepth: number;
-  readonly maxNodes: number;
-  tripped: boolean;
-  readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
+	readonly visited: Set<string>;
+	count: number;
+	readonly maxDepth: number;
+	readonly maxNodes: number;
+	tripped: boolean;
+	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
 }
 
 function createReadGuard(options?: ReadGuardOptions): ReadGuard {
-  return {
-    visited: new Set<string>(),
-    count: 0,
-    maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxNodes: options?.maxNodes ?? DEFAULT_MAX_NODES,
-    tripped: false,
-    onGuardTrip: options?.onGuardTrip,
-  };
+	return {
+		visited: new Set<string>(),
+		count: 0,
+		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+		maxNodes: options?.maxNodes ?? DEFAULT_MAX_NODES,
+		tripped: false,
+		onGuardTrip: options?.onGuardTrip,
+	};
 }
 
 function trip(guard: ReadGuard, reason: ReadGuardTrip): void {
-  if (!guard.tripped) {
-    guard.tripped = true;
-    guard.onGuardTrip?.(reason);
-  }
+	if (!guard.tripped) {
+		guard.tripped = true;
+		guard.onGuardTrip?.(reason);
+	}
 }
 
 export function applyIRToNativeTree(
-  root: Y.Map<unknown>,
-  ir: PageIR,
-  baseline: PageIR | undefined,
+	root: Y.Map<unknown>,
+	ir: PageIR,
+	baseline: PageIR | undefined,
 ): void {
-  if (root.get(NATIVE_VERSION_KEY) !== ir.version) {
-    root.set(NATIVE_VERSION_KEY, ir.version);
-  }
-  if (root.get(NATIVE_ROOT_ID_KEY) !== ir.root.id) {
-    root.set(NATIVE_ROOT_ID_KEY, ir.root.id);
-  }
-  const newAssets = JSON.stringify(ir.assets ?? []);
-  const baseAssets = JSON.stringify(baseline?.assets ?? []);
-  if (newAssets !== baseAssets) root.set(NATIVE_ASSETS_KEY, newAssets);
-  const newMeta = JSON.stringify(ir.metadata ?? {});
-  const baseMeta = JSON.stringify(baseline?.metadata ?? {});
-  if (newMeta !== baseMeta) root.set(NATIVE_METADATA_KEY, newMeta);
+	if (root.get(NATIVE_VERSION_KEY) !== ir.version) {
+		root.set(NATIVE_VERSION_KEY, ir.version);
+	}
+	if (root.get(NATIVE_ROOT_ID_KEY) !== ir.root.id) {
+		root.set(NATIVE_ROOT_ID_KEY, ir.root.id);
+	}
+	const newAssets = JSON.stringify(ir.assets ?? []);
+	const baseAssets = JSON.stringify(baseline?.assets ?? []);
+	if (newAssets !== baseAssets) root.set(NATIVE_ASSETS_KEY, newAssets);
+	const newMeta = JSON.stringify(ir.metadata ?? {});
+	const baseMeta = JSON.stringify(baseline?.metadata ?? {});
+	if (newMeta !== baseMeta) root.set(NATIVE_METADATA_KEY, newMeta);
 
-  const baselineNodes = new Map<string, PageIRNode>();
-  if (baseline) walkNodes(baseline.root, (n) => baselineNodes.set(n.id, n));
+	const baselineNodes = new Map<string, PageIRNode>();
+	if (baseline) walkNodes(baseline.root, (n) => baselineNodes.set(n.id, n));
 
-  const desiredIds = new Set<string>();
-  collectIds(ir.root, desiredIds);
+	const desiredIds = new Set<string>();
+	collectIds(ir.root, desiredIds);
 
-  walkNodes(ir.root, (node) => {
-    const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(node.id));
-    writeNode(nodeMap, node, baselineNodes.get(node.id));
-  });
+	walkNodes(ir.root, (node) => {
+		const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(node.id));
+		writeNode(nodeMap, node, baselineNodes.get(node.id));
+	});
 
-  const baselineIds = new Set(baselineNodes.keys());
-  for (const id of baselineIds) {
-    if (!desiredIds.has(id)) root.delete(nativeNodeKey(id));
-  }
+	const baselineIds = new Set(baselineNodes.keys());
+	for (const id of baselineIds) {
+		if (!desiredIds.has(id)) root.delete(nativeNodeKey(id));
+	}
 }
 
 /**
@@ -207,78 +207,78 @@ export function applyIRToNativeTree(
  * apply's baseline sweep.
  */
 export function diffIRNodesForLocalSave(
-  prev: PageIR | undefined,
-  next: PageIR,
-  prevHashes?: ReadonlyMap<string, string>,
+	prev: PageIR | undefined,
+	next: PageIR,
+	prevHashes?: ReadonlyMap<string, string>,
 ): {
-  structural: boolean;
-  changed: Map<string, PageIRNode>;
-  baseline: Map<string, PageIRNode>;
-  removed: Set<string>;
+	structural: boolean;
+	changed: Map<string, PageIRNode>;
+	baseline: Map<string, PageIRNode>;
+	removed: Set<string>;
 } {
-  const structuralResult = {
-    structural: true,
-    changed: new Map<string, PageIRNode>(),
-    baseline: new Map<string, PageIRNode>(),
-    removed: new Set<string>(),
-  };
-  if (prev === undefined || prev.root.id !== next.root.id) {
-    return structuralResult;
-  }
+	const structuralResult = {
+		structural: true,
+		changed: new Map<string, PageIRNode>(),
+		baseline: new Map<string, PageIRNode>(),
+		removed: new Set<string>(),
+	};
+	if (prev === undefined || prev.root.id !== next.root.id) {
+		return structuralResult;
+	}
 
-  const prevById = new Map<string, PageIRNode>();
-  walkNodes(prev.root, (n) => prevById.set(n.id, n));
-  const nextById = new Map<string, PageIRNode>();
-  walkNodes(next.root, (n) => nextById.set(n.id, n));
+	const prevById = new Map<string, PageIRNode>();
+	walkNodes(prev.root, (n) => prevById.set(n.id, n));
+	const nextById = new Map<string, PageIRNode>();
+	walkNodes(next.root, (n) => nextById.set(n.id, n));
 
-  const changed = new Map<string, PageIRNode>();
-  const baseline = new Map<string, PageIRNode>();
-  const removed = new Set<string>();
-  for (const id of prevById.keys()) {
-    if (!nextById.has(id)) removed.add(id);
-  }
-  for (const [id, n] of nextById) {
-    const p = prevById.get(id);
-    if (p === undefined) {
-      // Added node — written fresh (no baseline entry, mirroring
-      // `applyIRToNativeTree`'s `baselineNodes.get(id) === undefined`).
-      changed.set(id, n);
-      continue;
-    }
-    // Parent relink (childIds reorder/membership) is now carried in
-    // `changed`, not escalated to a full rebuild (P1). Child id
-    // lists are short string arrays — compared exactly and cheaply.
-    const nKids = (n.children ?? []).map((c) => c.id);
-    const pKids = (p.children ?? []).map((c) => c.id);
-    const kidsDiffer =
-      nKids.length !== pKids.length || nKids.some((k, i) => k !== pKids[i]);
-    // P2 — when the live-IR cache supplied the prev-side content
-    // hash, classify own-field changes with ONE hash of the next
-    // node vs the cached prev hash, instead of stringifying
-    // props/assets/meta of BOTH sides for every node every save.
-    // hashNodeContent covers exactly {type,slot,slotKind,props,
-    // assets,meta} so this is classification-equivalent to the
-    // stringify path (same determinism/collision profile as
-    // pageIRHash, which the codebase already relies on). Falls back
-    // to the exact stringify compare when no hash is available
-    // (first save, cache miss) so the result is never weaker.
-    const prevHash = prevHashes?.get(id);
-    const contentChanged =
-      prevHash !== undefined
-        ? hashNodeContent(n) !== prevHash
-        : n.type !== p.type ||
-          n.slot !== p.slot ||
-          n.slotKind !== p.slotKind ||
-          JSON.stringify(n.props ?? {}) !== JSON.stringify(p.props ?? {}) ||
-          JSON.stringify(n.assets ?? null) !==
-            JSON.stringify(p.assets ?? null) ||
-          JSON.stringify(n.meta ?? null) !== JSON.stringify(p.meta ?? null);
-    if (kidsDiffer || contentChanged) {
-      changed.set(id, n);
-      baseline.set(id, p);
-    }
-  }
-  return { structural: false, changed, baseline, removed };
+	const changed = new Map<string, PageIRNode>();
+	const baseline = new Map<string, PageIRNode>();
+	const removed = new Set<string>();
+	for (const id of prevById.keys()) {
+		if (!nextById.has(id)) removed.add(id);
+	}
+	for (const [id, n] of nextById) {
+		const p = prevById.get(id);
+		if (p === undefined) {
+			// Added node — written fresh (no baseline entry, mirroring
+			// `applyIRToNativeTree`'s `baselineNodes.get(id) === undefined`).
+			changed.set(id, n);
+			continue;
+		}
+		// Parent relink (childIds reorder/membership) is now carried in
+		// `changed`, not escalated to a full rebuild (P1). Child id
+		// lists are short string arrays — compared exactly and cheaply.
+		const nKids = (n.children ?? []).map((c) => c.id);
+		const pKids = (p.children ?? []).map((c) => c.id);
+		const kidsDiffer =
+			nKids.length !== pKids.length || nKids.some((k, i) => k !== pKids[i]);
+		// P2 — when the live-IR cache supplied the prev-side content
+		// hash, classify own-field changes with ONE hash of the next
+		// node vs the cached prev hash, instead of stringifying
+		// props/assets/meta of BOTH sides for every node every save.
+		// hashNodeContent covers exactly {type,slot,slotKind,props,
+		// assets,meta} so this is classification-equivalent to the
+		// stringify path (same determinism/collision profile as
+		// pageIRHash, which the codebase already relies on). Falls back
+		// to the exact stringify compare when no hash is available
+		// (first save, cache miss) so the result is never weaker.
+		const prevHash = prevHashes?.get(id);
+		const contentChanged =
+			prevHash !== undefined
+				? hashNodeContent(n) !== prevHash
+				: n.type !== p.type ||
+					n.slot !== p.slot ||
+					n.slotKind !== p.slotKind ||
+					JSON.stringify(n.props ?? {}) !== JSON.stringify(p.props ?? {}) ||
+					JSON.stringify(n.assets ?? null) !==
+						JSON.stringify(p.assets ?? null) ||
+					JSON.stringify(n.meta ?? null) !== JSON.stringify(p.meta ?? null);
+		if (kidsDiffer || contentChanged) {
+			changed.set(id, n);
+			baseline.set(id, p);
+		}
+	}
+	return { structural: false, changed, baseline, removed };
 }
 
 /**
@@ -291,65 +291,65 @@ export function diffIRNodesForLocalSave(
  * reproduces the full apply's baseline sweep.
  */
 export function applyChangedNodesToNativeTree(
-  root: Y.Map<unknown>,
-  ir: PageIR,
-  prevIR: PageIR | undefined,
-  changed: ReadonlyMap<string, PageIRNode>,
-  baseline: ReadonlyMap<string, PageIRNode>,
-  removed?: ReadonlySet<string>,
+	root: Y.Map<unknown>,
+	ir: PageIR,
+	prevIR: PageIR | undefined,
+	changed: ReadonlyMap<string, PageIRNode>,
+	baseline: ReadonlyMap<string, PageIRNode>,
+	removed?: ReadonlySet<string>,
 ): void {
-  // Root-level writes use the EXACT conditions of the full
-  // `applyIRToNativeTree` (compare next vs the prior IR) so the
-  // resulting Y.Doc is byte-identical — this path only omits the
-  // per-node writes that would have been no-ops anyway.
-  if (root.get(NATIVE_VERSION_KEY) !== ir.version) {
-    root.set(NATIVE_VERSION_KEY, ir.version);
-  }
-  if (root.get(NATIVE_ROOT_ID_KEY) !== ir.root.id) {
-    root.set(NATIVE_ROOT_ID_KEY, ir.root.id);
-  }
-  const newAssets = JSON.stringify(ir.assets ?? []);
-  const baseAssets = JSON.stringify(prevIR?.assets ?? []);
-  if (newAssets !== baseAssets) root.set(NATIVE_ASSETS_KEY, newAssets);
-  const newMeta = JSON.stringify(ir.metadata ?? {});
-  const baseMeta = JSON.stringify(prevIR?.metadata ?? {});
-  if (newMeta !== baseMeta) root.set(NATIVE_METADATA_KEY, newMeta);
-  for (const [id, node] of changed) {
-    const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(id));
-    writeNode(nodeMap, node, baseline.get(id));
-  }
-  // P1 — reproduce the full apply's baseline sweep for relink saves
-  // that removed nodes.
-  if (removed) for (const id of removed) root.delete(nativeNodeKey(id));
+	// Root-level writes use the EXACT conditions of the full
+	// `applyIRToNativeTree` (compare next vs the prior IR) so the
+	// resulting Y.Doc is byte-identical — this path only omits the
+	// per-node writes that would have been no-ops anyway.
+	if (root.get(NATIVE_VERSION_KEY) !== ir.version) {
+		root.set(NATIVE_VERSION_KEY, ir.version);
+	}
+	if (root.get(NATIVE_ROOT_ID_KEY) !== ir.root.id) {
+		root.set(NATIVE_ROOT_ID_KEY, ir.root.id);
+	}
+	const newAssets = JSON.stringify(ir.assets ?? []);
+	const baseAssets = JSON.stringify(prevIR?.assets ?? []);
+	if (newAssets !== baseAssets) root.set(NATIVE_ASSETS_KEY, newAssets);
+	const newMeta = JSON.stringify(ir.metadata ?? {});
+	const baseMeta = JSON.stringify(prevIR?.metadata ?? {});
+	if (newMeta !== baseMeta) root.set(NATIVE_METADATA_KEY, newMeta);
+	for (const [id, node] of changed) {
+		const nodeMap = getOrCreateNodeMap(root, nativeNodeKey(id));
+		writeNode(nodeMap, node, baseline.get(id));
+	}
+	// P1 — reproduce the full apply's baseline sweep for relink saves
+	// that removed nodes.
+	if (removed) for (const id of removed) root.delete(nativeNodeKey(id));
 }
 
 export function readNativeTree(
-  root: Y.Map<unknown>,
-  options?: ReadGuardOptions,
+	root: Y.Map<unknown>,
+	options?: ReadGuardOptions,
 ): PageIR | undefined {
-  const version = root.get(NATIVE_VERSION_KEY);
-  const rootId = root.get(NATIVE_ROOT_ID_KEY);
-  if (version !== "1" || typeof rootId !== "string") return undefined;
-  const guard = createReadGuard(options);
-  const rootNode = readNode(root, rootId, guard, 0);
-  if (!rootNode) return undefined;
-  const rawAssets = root.get(NATIVE_ASSETS_KEY);
-  const rawMeta = root.get(NATIVE_METADATA_KEY);
-  const assets = parseJSONOr(rawAssets, []);
-  const metadata = parseJSONOr(rawMeta, {});
-  return {
-    version: "1",
-    root: rootNode,
-    assets,
-    metadata,
-  } as PageIR;
+	const version = root.get(NATIVE_VERSION_KEY);
+	const rootId = root.get(NATIVE_ROOT_ID_KEY);
+	if (version !== "1" || typeof rootId !== "string") return undefined;
+	const guard = createReadGuard(options);
+	const rootNode = readNode(root, rootId, guard, 0);
+	if (!rootNode) return undefined;
+	const rawAssets = root.get(NATIVE_ASSETS_KEY);
+	const rawMeta = root.get(NATIVE_METADATA_KEY);
+	const assets = parseJSONOr(rawAssets, []);
+	const metadata = parseJSONOr(rawMeta, {});
+	return {
+		version: "1",
+		root: rootNode,
+		assets,
+		metadata,
+	} as PageIR;
 }
 
 /** P1 — topology delta; see {@link RelinkDelta} in `types.ts`. */
 export interface DerivedRelink {
-  addedIds: Set<string>;
-  removedIds: Set<string>;
-  parentsTouched: Set<string>;
+	addedIds: Set<string>;
+	removedIds: Set<string>;
+	parentsTouched: Set<string>;
 }
 
 /**
@@ -368,146 +368,146 @@ export interface DerivedRelink {
  * - neither — a pure node-local prop patch (existing fast path).
  */
 export function deriveChangedNodeIds(
-  events: readonly Y.YEvent<Y.AbstractType<unknown>>[],
+	events: readonly Y.YEvent<Y.AbstractType<unknown>>[],
 ): {
-  ids: Set<string>;
-  structural: boolean;
-  relink?: DerivedRelink;
+	ids: Set<string>;
+	structural: boolean;
+	relink?: DerivedRelink;
 } {
-  const ids = new Set<string>();
-  const addedIds = new Set<string>();
-  const removedIds = new Set<string>();
-  const parentsTouched = new Set<string>();
-  let structural = false;
-  for (const event of events) {
-    const path = event.path;
-    if (path.length === 0) {
-      // Event on the tree root map itself.
-      for (const [key, change] of event.changes.keys) {
-        if (
-          key === NATIVE_VERSION_KEY ||
-          key === NATIVE_ROOT_ID_KEY ||
-          key === NATIVE_ASSETS_KEY ||
-          key === NATIVE_METADATA_KEY
-        ) {
-          // Whole-document change — genuine full rebuild.
-          structural = true;
-        } else if (key.startsWith(NATIVE_NODE_PREFIX)) {
-          // A whole node Y.Map was added or removed at the root.
-          // Recorded as a relink (re-read just this node /
-          // drop it) rather than a full re-parse of every node.
-          const id = key.slice(NATIVE_NODE_PREFIX.length);
-          ids.add(id);
-          if (change.action === "delete") removedIds.add(id);
-          else addedIds.add(id);
-        }
-      }
-      continue;
-    }
-    const first = path[0];
-    if (typeof first !== "string" || !first.startsWith(NATIVE_NODE_PREFIX)) {
-      continue;
-    }
-    const ownerId = first.slice(NATIVE_NODE_PREFIX.length);
-    ids.add(ownerId);
-    // A `childIds` reorder/membership change relinks the tree. The
-    // cache re-reads just this parent's child id list and rebuilds
-    // from cached node props — no whole-document re-parse.
-    if (path.includes("childIds")) parentsTouched.add(ownerId);
-  }
-  const hasRelink =
-    addedIds.size > 0 || removedIds.size > 0 || parentsTouched.size > 0;
-  if (structural || !hasRelink) {
-    return { ids, structural };
-  }
-  return {
-    ids,
-    structural: false,
-    relink: { addedIds, removedIds, parentsTouched },
-  };
+	const ids = new Set<string>();
+	const addedIds = new Set<string>();
+	const removedIds = new Set<string>();
+	const parentsTouched = new Set<string>();
+	let structural = false;
+	for (const event of events) {
+		const path = event.path;
+		if (path.length === 0) {
+			// Event on the tree root map itself.
+			for (const [key, change] of event.changes.keys) {
+				if (
+					key === NATIVE_VERSION_KEY ||
+					key === NATIVE_ROOT_ID_KEY ||
+					key === NATIVE_ASSETS_KEY ||
+					key === NATIVE_METADATA_KEY
+				) {
+					// Whole-document change — genuine full rebuild.
+					structural = true;
+				} else if (key.startsWith(NATIVE_NODE_PREFIX)) {
+					// A whole node Y.Map was added or removed at the root.
+					// Recorded as a relink (re-read just this node /
+					// drop it) rather than a full re-parse of every node.
+					const id = key.slice(NATIVE_NODE_PREFIX.length);
+					ids.add(id);
+					if (change.action === "delete") removedIds.add(id);
+					else addedIds.add(id);
+				}
+			}
+			continue;
+		}
+		const first = path[0];
+		if (typeof first !== "string" || !first.startsWith(NATIVE_NODE_PREFIX)) {
+			continue;
+		}
+		const ownerId = first.slice(NATIVE_NODE_PREFIX.length);
+		ids.add(ownerId);
+		// A `childIds` reorder/membership change relinks the tree. The
+		// cache re-reads just this parent's child id list and rebuilds
+		// from cached node props — no whole-document re-parse.
+		if (path.includes("childIds")) parentsTouched.add(ownerId);
+	}
+	const hasRelink =
+		addedIds.size > 0 || removedIds.size > 0 || parentsTouched.size > 0;
+	if (structural || !hasRelink) {
+		return { ids, structural };
+	}
+	return {
+		ids,
+		structural: false,
+		relink: { addedIds, removedIds, parentsTouched },
+	};
 }
 
 function writeNode(
-  map: NodeYMap,
-  node: PageIRNode,
-  baseline: PageIRNode | undefined,
+	map: NodeYMap,
+	node: PageIRNode,
+	baseline: PageIRNode | undefined,
 ): void {
-  if (map.get("id") !== node.id) map.set("id", node.id);
-  if (map.get("type") !== node.type) map.set("type", node.type);
-  writeOrClear(map, "slot", node.slot, baseline?.slot);
-  writeOrClear(map, "slotKind", node.slotKind, baseline?.slotKind);
+	if (map.get("id") !== node.id) map.set("id", node.id);
+	if (map.get("type") !== node.type) map.set("type", node.type);
+	writeOrClear(map, "slot", node.slot, baseline?.slot);
+	writeOrClear(map, "slotKind", node.slotKind, baseline?.slotKind);
 
-  reconcileProps(getOrCreatePropsMap(map), node.props, baseline?.props);
+	reconcileProps(getOrCreatePropsMap(map), node.props, baseline?.props);
 
-  reconcileChildIds(
-    getOrCreateChildIds(map),
-    node.children ?? [],
-    baseline?.children ?? [],
-  );
+	reconcileChildIds(
+		getOrCreateChildIds(map),
+		node.children ?? [],
+		baseline?.children ?? [],
+	);
 
-  const newAssets = node.assets ? JSON.stringify(node.assets) : undefined;
-  const baseAssets = baseline?.assets
-    ? JSON.stringify(baseline.assets)
-    : undefined;
-  if (newAssets !== baseAssets) {
-    if (newAssets !== undefined) map.set("assets", newAssets);
-    else map.delete("assets");
-  }
-  const newMeta = node.meta ? JSON.stringify(node.meta) : undefined;
-  const baseMeta = baseline?.meta ? JSON.stringify(baseline.meta) : undefined;
-  if (newMeta !== baseMeta) {
-    if (newMeta !== undefined) map.set("meta", newMeta);
-    else map.delete("meta");
-  }
+	const newAssets = node.assets ? JSON.stringify(node.assets) : undefined;
+	const baseAssets = baseline?.assets
+		? JSON.stringify(baseline.assets)
+		: undefined;
+	if (newAssets !== baseAssets) {
+		if (newAssets !== undefined) map.set("assets", newAssets);
+		else map.delete("assets");
+	}
+	const newMeta = node.meta ? JSON.stringify(node.meta) : undefined;
+	const baseMeta = baseline?.meta ? JSON.stringify(baseline.meta) : undefined;
+	if (newMeta !== baseMeta) {
+		if (newMeta !== undefined) map.set("meta", newMeta);
+		else map.delete("meta");
+	}
 }
 
 function writeOrClear(
-  map: NodeYMap,
-  key: string,
-  next: string | undefined,
-  prev: string | undefined,
+	map: NodeYMap,
+	key: string,
+	next: string | undefined,
+	prev: string | undefined,
 ): void {
-  if (next === prev) return;
-  if (next === undefined) map.delete(key);
-  else map.set(key, next);
+	if (next === prev) return;
+	if (next === undefined) map.delete(key);
+	else map.set(key, next);
 }
 
 function reconcileProps(
-  target: Y.Map<unknown>,
-  props: Readonly<Record<string, unknown>>,
-  baseline: Readonly<Record<string, unknown>> | undefined,
+	target: Y.Map<unknown>,
+	props: Readonly<Record<string, unknown>>,
+	baseline: Readonly<Record<string, unknown>> | undefined,
 ): void {
-  const base = baseline ?? {};
-  // Pre-compute baseline encodings once per call so each prop is
-  // JSON.stringify'd at most twice across this reconciliation
-  // (once for the live value, once for the baseline), not 2× per
-  // prop per save like the previous tight-loop implementation (M6).
-  const baseEncoded = new Map<string, string>();
-  for (const key of Object.keys(base)) {
-    baseEncoded.set(key, JSON.stringify(base[key]));
-  }
-  for (const [key, value] of Object.entries(props)) {
-    const encoded = JSON.stringify(value);
-    const prevEncoded = baseEncoded.get(key);
-    // Only write keys whose value actually changed in the LOCAL
-    // authoring session; otherwise leave whatever the CRDT layer
-    // holds so concurrent disjoint edits both survive.
-    if (encoded !== prevEncoded) target.set(key, encoded);
-  }
-  for (const key of baseEncoded.keys()) {
-    if (!(key in props)) target.delete(key);
-  }
+	const base = baseline ?? {};
+	// Pre-compute baseline encodings once per call so each prop is
+	// JSON.stringify'd at most twice across this reconciliation
+	// (once for the live value, once for the baseline), not 2× per
+	// prop per save like the previous tight-loop implementation (M6).
+	const baseEncoded = new Map<string, string>();
+	for (const key of Object.keys(base)) {
+		baseEncoded.set(key, JSON.stringify(base[key]));
+	}
+	for (const [key, value] of Object.entries(props)) {
+		const encoded = JSON.stringify(value);
+		const prevEncoded = baseEncoded.get(key);
+		// Only write keys whose value actually changed in the LOCAL
+		// authoring session; otherwise leave whatever the CRDT layer
+		// holds so concurrent disjoint edits both survive.
+		if (encoded !== prevEncoded) target.set(key, encoded);
+	}
+	for (const key of baseEncoded.keys()) {
+		if (!(key in props)) target.delete(key);
+	}
 }
 
 function reconcileChildIds(
-  target: Y.Array<string>,
-  children: readonly PageIRNode[],
-  baseline: readonly PageIRNode[],
+	target: Y.Array<string>,
+	children: readonly PageIRNode[],
+	baseline: readonly PageIRNode[],
 ): void {
-  const desired = children.map((c) => c.id);
-  const baseIds = baseline.map((c) => c.id);
-  if (sameList(desired, baseIds)) return;
-  reconcileKeyedArray(target, baseIds, desired);
+	const desired = children.map((c) => c.id);
+	const baseIds = baseline.map((c) => c.id);
+	if (sameList(desired, baseIds)) return;
+	reconcileKeyedArray(target, baseIds, desired);
 }
 
 /**
@@ -536,98 +536,98 @@ function reconcileChildIds(
  * the old whole-array replacement.
  */
 function reconcileKeyedArray(
-  target: Y.Array<string>,
-  baseIds: readonly string[],
-  desiredIds: readonly string[],
+	target: Y.Array<string>,
+	baseIds: readonly string[],
+	desiredIds: readonly string[],
 ): void {
-  // Single live read; all index math is done on the `work` JS mirror
-  // and translated to targeted Y.Array ops. (The previous version
-  // called `target.toArray()` + `indexOf` inside loops — O(n²/n³) and
-  // 2000 individual inserts on a first 2000-child build, which bloated
-  // the seed update and blew the hydration budget.)
-  const cur = target.toArray();
-  if (sameList(cur, desiredIds)) return; // already converged / echo
+	// Single live read; all index math is done on the `work` JS mirror
+	// and translated to targeted Y.Array ops. (The previous version
+	// called `target.toArray()` + `indexOf` inside loops — O(n²/n³) and
+	// 2000 individual inserts on a first 2000-child build, which bloated
+	// the seed update and blew the hydration budget.)
+	const cur = target.toArray();
+	if (sameList(cur, desiredIds)) return; // already converged / echo
 
-  // Fast path: nothing local to preserve a delta against (fresh node,
-  // L1 migration, first save). One bulk insert — O(n), one op, exactly
-  // like the pre-I5 behaviour for the non-concurrent build path.
-  if (cur.length === 0) {
-    if (desiredIds.length > 0) target.insert(0, [...desiredIds]);
-    return;
-  }
+	// Fast path: nothing local to preserve a delta against (fresh node,
+	// L1 migration, first save). One bulk insert — O(n), one op, exactly
+	// like the pre-I5 behaviour for the non-concurrent build path.
+	if (cur.length === 0) {
+		if (desiredIds.length > 0) target.insert(0, [...desiredIds]);
+		return;
+	}
 
-  const desiredSet = new Set(desiredIds);
-  const baseSet = new Set(baseIds);
+	const desiredSet = new Set(desiredIds);
+	const baseSet = new Set(baseIds);
 
-  // 1. Removals the LOCAL peer intends (in base, no longer desired),
-  //    only where still present. Collect indices in one pass and
-  //    delete high→low so earlier indices stay valid. A concurrent
-  //    remote delete (id already gone) is simply not in `cur` → no-op,
-  //    so we never disturb it.
-  const work: string[] = [];
-  for (const id of cur) {
-    if (baseSet.has(id) && !desiredSet.has(id)) continue; // local remove
-    work.push(id);
-  }
-  for (let i = cur.length - 1; i >= 0; i -= 1) {
-    const id = cur[i] as string;
-    if (baseSet.has(id) && !desiredSet.has(id)) target.delete(i, 1);
-  }
+	// 1. Removals the LOCAL peer intends (in base, no longer desired),
+	//    only where still present. Collect indices in one pass and
+	//    delete high→low so earlier indices stay valid. A concurrent
+	//    remote delete (id already gone) is simply not in `cur` → no-op,
+	//    so we never disturb it.
+	const work: string[] = [];
+	for (const id of cur) {
+		if (baseSet.has(id) && !desiredSet.has(id)) continue; // local remove
+		work.push(id);
+	}
+	for (let i = cur.length - 1; i >= 0; i -= 1) {
+		const id = cur[i] as string;
+		if (baseSet.has(id) && !desiredSet.has(id)) target.delete(i, 1);
+	}
 
-  // 2. Additions the LOCAL peer made (in desired, not in base),
-  //    inserted in desired order after the nearest preceding desired
-  //    id that currently exists. Skip ids already present (remote
-  //    concurrent add / echo) so a child is never duplicated.
-  for (let di = 0; di < desiredIds.length; di += 1) {
-    const id = desiredIds[di] as string;
-    if (baseSet.has(id)) continue;
-    if (work.includes(id)) continue;
-    let insertAt = 0;
-    for (let k = di - 1; k >= 0; k -= 1) {
-      const pi = work.indexOf(desiredIds[k] as string);
-      if (pi >= 0) {
-        insertAt = pi + 1;
-        break;
-      }
-    }
-    target.insert(insertAt, [id]);
-    work.splice(insertAt, 0, id);
-  }
+	// 2. Additions the LOCAL peer made (in desired, not in base),
+	//    inserted in desired order after the nearest preceding desired
+	//    id that currently exists. Skip ids already present (remote
+	//    concurrent add / echo) so a child is never duplicated.
+	for (let di = 0; di < desiredIds.length; di += 1) {
+		const id = desiredIds[di] as string;
+		if (baseSet.has(id)) continue;
+		if (work.includes(id)) continue;
+		let insertAt = 0;
+		for (let k = di - 1; k >= 0; k -= 1) {
+			const pi = work.indexOf(desiredIds[k] as string);
+			if (pi >= 0) {
+				insertAt = pi + 1;
+				break;
+			}
+		}
+		target.insert(insertAt, [id]);
+		work.splice(insertAt, 0, id);
+	}
 
-  // 3. Reorder — only among ids the local peer controls (present AND
-  //    desired). Ids present but neither desired nor in base were
-  //    inserted concurrently by a remote peer: never move or drop them
-  //    (their absolute slots are preserved). Move only misplaced
-  //    controlled ids via targeted delete+insert, never the whole
-  //    array, so a remote peer's disjoint ops survive the merge.
-  for (let slot = 0; slot < desiredIds.length; slot += 1) {
-    const wantId = desiredIds[slot] as string;
-    let seen = -1;
-    let absIndex = -1;
-    for (let i = 0; i < work.length; i += 1) {
-      if (desiredSet.has(work[i] as string)) {
-        seen += 1;
-        if (seen === slot) {
-          absIndex = i;
-          break;
-        }
-      }
-    }
-    if (absIndex < 0) continue;
-    if (work[absIndex] === wantId) continue;
-    const fromIndex = work.indexOf(wantId);
-    if (fromIndex < 0) continue;
-    target.delete(fromIndex, 1);
-    work.splice(fromIndex, 1);
-    const insertAt = fromIndex < absIndex ? absIndex - 1 : absIndex;
-    target.insert(insertAt, [wantId]);
-    work.splice(insertAt, 0, wantId);
-  }
+	// 3. Reorder — only among ids the local peer controls (present AND
+	//    desired). Ids present but neither desired nor in base were
+	//    inserted concurrently by a remote peer: never move or drop them
+	//    (their absolute slots are preserved). Move only misplaced
+	//    controlled ids via targeted delete+insert, never the whole
+	//    array, so a remote peer's disjoint ops survive the merge.
+	for (let slot = 0; slot < desiredIds.length; slot += 1) {
+		const wantId = desiredIds[slot] as string;
+		let seen = -1;
+		let absIndex = -1;
+		for (let i = 0; i < work.length; i += 1) {
+			if (desiredSet.has(work[i] as string)) {
+				seen += 1;
+				if (seen === slot) {
+					absIndex = i;
+					break;
+				}
+			}
+		}
+		if (absIndex < 0) continue;
+		if (work[absIndex] === wantId) continue;
+		const fromIndex = work.indexOf(wantId);
+		if (fromIndex < 0) continue;
+		target.delete(fromIndex, 1);
+		work.splice(fromIndex, 1);
+		const insertAt = fromIndex < absIndex ? absIndex - 1 : absIndex;
+		target.insert(insertAt, [wantId]);
+		work.splice(insertAt, 0, wantId);
+	}
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((v, i) => v === b[i]);
+	if (a.length !== b.length) return false;
+	return a.every((v, i) => v === b[i]);
 }
 
 /**
@@ -637,47 +637,47 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
  * of rebuilding the whole document on every remote event (H3).
  */
 export function readSubtree(
-  root: Y.Map<unknown>,
-  id: string,
-  options?: ReadGuardOptions,
+	root: Y.Map<unknown>,
+	id: string,
+	options?: ReadGuardOptions,
 ): PageIRNode | undefined {
-  return readNode(root, id, createReadGuard(options), 0);
+	return readNode(root, id, createReadGuard(options), 0);
 }
 
 function readNode(
-  root: Y.Map<unknown>,
-  id: string,
-  guard: ReadGuard,
-  depth: number,
+	root: Y.Map<unknown>,
+	id: string,
+	guard: ReadGuard,
+	depth: number,
 ): PageIRNode | undefined {
-  if (guard.tripped) return undefined;
-  if (depth > guard.maxDepth) {
-    trip(guard, "max-depth");
-    return undefined;
-  }
-  if (guard.visited.has(id)) {
-    // Repeated id across the traversal == cycle or duplicated child
-    // (the IR contract is a tree, not a DAG). Stop expanding rather
-    // than recurse forever.
-    trip(guard, "cycle");
-    return undefined;
-  }
-  guard.count += 1;
-  if (guard.count > guard.maxNodes) {
-    trip(guard, "max-nodes");
-    return undefined;
-  }
-  guard.visited.add(id);
-  const own = parseNodeOwn(root, id);
-  if (!own) return undefined;
-  const { node, childIds } = own;
-  const children: PageIRNode[] = [];
-  for (const childId of childIds) {
-    const child = readNode(root, childId, guard, depth + 1);
-    if (child) children.push(child);
-  }
-  if (children.length > 0) node.children = children;
-  return node as unknown as PageIRNode;
+	if (guard.tripped) return undefined;
+	if (depth > guard.maxDepth) {
+		trip(guard, "max-depth");
+		return undefined;
+	}
+	if (guard.visited.has(id)) {
+		// Repeated id across the traversal == cycle or duplicated child
+		// (the IR contract is a tree, not a DAG). Stop expanding rather
+		// than recurse forever.
+		trip(guard, "cycle");
+		return undefined;
+	}
+	guard.count += 1;
+	if (guard.count > guard.maxNodes) {
+		trip(guard, "max-nodes");
+		return undefined;
+	}
+	guard.visited.add(id);
+	const own = parseNodeOwn(root, id);
+	if (!own) return undefined;
+	const { node, childIds } = own;
+	const children: PageIRNode[] = [];
+	for (const childId of childIds) {
+		const child = readNode(root, childId, guard, depth + 1);
+		if (child) children.push(child);
+	}
+	if (children.length > 0) node.children = children;
+	return node as unknown as PageIRNode;
 }
 
 /**
@@ -688,87 +688,87 @@ function readNode(
  * re-`JSON.parse`d on a remote event.
  */
 export interface ShallowNativeNode {
-  /** Node minus `children` — assignable into a `PageIRNode`. */
-  readonly node: Record<string, unknown>;
-  readonly childIds: readonly string[];
+	/** Node minus `children` — assignable into a `PageIRNode`. */
+	readonly node: Record<string, unknown>;
+	readonly childIds: readonly string[];
 }
 
 /** Parse one node's own fields + child id list (no recursion). */
 export function readNodeShallow(
-  root: Y.Map<unknown>,
-  id: string,
+	root: Y.Map<unknown>,
+	id: string,
 ): ShallowNativeNode | undefined {
-  return parseNodeOwn(root, id);
+	return parseNodeOwn(root, id);
 }
 
 function parseNodeOwn(
-  root: Y.Map<unknown>,
-  id: string,
+	root: Y.Map<unknown>,
+	id: string,
 ): { node: Record<string, unknown>; childIds: string[] } | undefined {
-  const map = getNodeMap(root, id);
-  if (map === undefined) return undefined;
-  const type = map.get("type");
-  if (typeof type !== "string") return undefined;
-  const propsMap = getPropsMap(map);
-  const props: Record<string, unknown> = {};
-  if (propsMap !== undefined) {
-    for (const [key, raw] of propsMap.entries()) {
-      if (typeof raw !== "string") continue;
-      try {
-        props[key] = JSON.parse(raw);
-      } catch {
-        // drop malformed prop value
-      }
-    }
-  }
-  const childIdsRaw = getChildIds(map);
-  const childIds: string[] = [];
-  if (childIdsRaw !== undefined) {
-    for (const childId of childIdsRaw.toArray()) {
-      if (typeof childId === "string") childIds.push(childId);
-    }
-  }
-  const slot = map.get("slot");
-  const slotKind = map.get("slotKind");
-  const rawAssets = map.get("assets");
-  const rawMeta = map.get("meta");
+	const map = getNodeMap(root, id);
+	if (map === undefined) return undefined;
+	const type = map.get("type");
+	if (typeof type !== "string") return undefined;
+	const propsMap = getPropsMap(map);
+	const props: Record<string, unknown> = {};
+	if (propsMap !== undefined) {
+		for (const [key, raw] of propsMap.entries()) {
+			if (typeof raw !== "string") continue;
+			try {
+				props[key] = JSON.parse(raw);
+			} catch {
+				// drop malformed prop value
+			}
+		}
+	}
+	const childIdsRaw = getChildIds(map);
+	const childIds: string[] = [];
+	if (childIdsRaw !== undefined) {
+		for (const childId of childIdsRaw.toArray()) {
+			if (typeof childId === "string") childIds.push(childId);
+		}
+	}
+	const slot = map.get("slot");
+	const slotKind = map.get("slotKind");
+	const rawAssets = map.get("assets");
+	const rawMeta = map.get("meta");
 
-  const node: Record<string, unknown> = { id, type, props };
-  if (typeof slot === "string") node.slot = slot;
-  if (typeof slotKind === "string") node.slotKind = slotKind;
-  if (typeof rawAssets === "string") {
-    const assets = parseJSONOr(rawAssets, undefined);
-    if (Array.isArray(assets)) node.assets = assets;
-  }
-  if (typeof rawMeta === "string") {
-    const meta = parseJSONOr(rawMeta, undefined);
-    if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-      node.meta = meta;
-    }
-  }
-  return { node, childIds };
+	const node: Record<string, unknown> = { id, type, props };
+	if (typeof slot === "string") node.slot = slot;
+	if (typeof slotKind === "string") node.slotKind = slotKind;
+	if (typeof rawAssets === "string") {
+		const assets = parseJSONOr(rawAssets, undefined);
+		if (Array.isArray(assets)) node.assets = assets;
+	}
+	if (typeof rawMeta === "string") {
+		const meta = parseJSONOr(rawMeta, undefined);
+		if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+			node.meta = meta;
+		}
+	}
+	return { node, childIds };
 }
 
 function walkNodes(root: PageIRNode, visit: (node: PageIRNode) => void): void {
-  const stack: PageIRNode[] = [root];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    visit(node);
-    if (node.children) stack.push(...node.children);
-  }
+	const stack: PageIRNode[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (!node) continue;
+		visit(node);
+		if (node.children) stack.push(...node.children);
+	}
 }
 
 function collectIds(node: PageIRNode, out: Set<string>): void {
-  out.add(node.id);
-  if (node.children) for (const child of node.children) collectIds(child, out);
+	out.add(node.id);
+	if (node.children) for (const child of node.children) collectIds(child, out);
 }
 
 function parseJSONOr<T>(raw: unknown, fallback: T): T {
-  if (typeof raw !== "string") return fallback;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+	if (typeof raw !== "string") return fallback;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return fallback;
+	}
 }

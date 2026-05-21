@@ -9,46 +9,46 @@ import { defineConfig } from "@rslib/core";
  * application root.
  */
 export default defineConfig({
-  source: {
-    entry: {
-      index: [
-        "./src/**/*.ts",
-        "!./src/**/*.test.ts",
-        "!./src/**/*.spec.ts",
-        "!./src/**/__tests__/**",
-      ],
-    },
-  },
-  lib: [
-    {
-      bundle: false,
-      dts: {
-        autoExtension: true,
-      },
-      format: "esm",
-    },
-    {
-      bundle: false,
-      dts: {
-        autoExtension: true,
-      },
-      format: "cjs",
-    },
-  ],
-  output: {
-    target: "node",
-    externals: [
-      "@anvilkit/core",
-      "@anvilkit/ir",
-      "@anvilkit/plugin-version-history",
-      "@anvilkit/utils",
-      "@puckeditor/core",
-      "react",
-      "react-dom",
-      "yjs",
-      "y-protocols",
-      "y-protocols/awareness",
-      "y-websocket",
-    ],
-  },
+	source: {
+		entry: {
+			index: [
+				"./src/**/*.ts",
+				"!./src/**/*.test.ts",
+				"!./src/**/*.spec.ts",
+				"!./src/**/__tests__/**",
+			],
+		},
+	},
+	lib: [
+		{
+			bundle: false,
+			dts: {
+				autoExtension: true,
+			},
+			format: "esm",
+		},
+		{
+			bundle: false,
+			dts: {
+				autoExtension: true,
+			},
+			format: "cjs",
+		},
+	],
+	output: {
+		target: "node",
+		externals: [
+			"@anvilkit/core",
+			"@anvilkit/ir",
+			"@anvilkit/plugin-version-history",
+			"@anvilkit/utils",
+			"@puckeditor/core",
+			"react",
+			"react-dom",
+			"yjs",
+			"y-protocols",
+			"y-protocols/awareness",
+			"y-websocket",
+		],
+	},
 });

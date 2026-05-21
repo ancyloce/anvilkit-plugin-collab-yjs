@@ -10,26 +10,6 @@ import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
 import config from "../meta/config.json";
 import packageJson from "../package.json";
-import {
-	type LocationIndex,
-	createLocationIndex,
-	projectChangedNodes,
-} from "./utils/incremental-projection.js";
-import {
-	createInboundScheduler,
-	type InboundScheduler,
-} from "./utils/inbound-scheduler.js";
-import { type TimingKind, nowMs } from "./utils/metrics.js";
-import {
-	ROOT_DROPPABLE_ID,
-	type PuckContentItem,
-	type PuckData,
-	type ReplaceAction,
-} from "./utils/puck-shapes.js";
-import {
-	createRemoteDispatchGuard,
-	type RemoteDispatchGuard,
-} from "./utils/remote-guard.js";
 import type {
 	CollabPolicy,
 	CreateCollabPluginOptions,
@@ -37,6 +17,26 @@ import type {
 	RemoteChange,
 	ValidationFailure,
 } from "./types/types.js";
+import {
+	createInboundScheduler,
+	type InboundScheduler,
+} from "./utils/inbound-scheduler.js";
+import {
+	createLocationIndex,
+	type LocationIndex,
+	projectChangedNodes,
+} from "./utils/incremental-projection.js";
+import { nowMs, type TimingKind } from "./utils/metrics.js";
+import {
+	type PuckContentItem,
+	type PuckData,
+	type ReplaceAction,
+	ROOT_DROPPABLE_ID,
+} from "./utils/puck-shapes.js";
+import {
+	createRemoteDispatchGuard,
+	type RemoteDispatchGuard,
+} from "./utils/remote-guard.js";
 
 /**
  * Internal telemetry surface optionally exposed by `createYjsAdapter`
