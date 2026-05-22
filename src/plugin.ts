@@ -7,6 +7,8 @@ import type {
 } from "@anvilkit/core/types";
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
+import { Users } from "lucide-react";
+import { createElement } from "react";
 
 import config from "../meta/config.json";
 import packageJson from "../package.json";
@@ -123,6 +125,7 @@ function sweepPendingRemoteData(
 const META = {
 	...config,
 	version: packageJson.version,
+	icon: createElement(Users),
 } as const;
 
 /**

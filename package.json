@@ -60,6 +60,7 @@
 		"@anvilkit/ir": "workspace:*",
 		"@anvilkit/plugin-version-history": "workspace:*",
 		"@anvilkit/utils": "workspace:*",
+		"lucide-react": "^1.16.0",
 		"y-protocols": "^1.0.7",
 		"yjs": "^13.6.30"
 	},
