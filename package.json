@@ -76,6 +76,7 @@
 		"publint": "publint",
 		"check:publint": "publint",
 		"check:circular": "madge --circular --extensions ts src/",
+		"check:all": "pnpm check:publint && pnpm check:circular",
 		"size": "size-limit"
 	},
 	"devDependencies": {
