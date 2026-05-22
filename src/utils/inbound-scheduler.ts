@@ -1,7 +1,15 @@
 import type { PageIR } from "@anvilkit/core/types";
 import type { PeerInfo } from "@anvilkit/plugin-version-history";
 
-import type { RemoteChange } from "../types/types.js";
+import type {
+	InboundSchedulerHandleScheduler,
+	RemoteChange,
+} from "../types/types.js";
+
+// `InboundSchedulerHandleScheduler` now lives in ../types/types.ts to break
+// the types ↔ utils import cycle. Re-exported here so existing importers
+// (and tests) can keep importing it from this module.
+export type { InboundSchedulerHandleScheduler };
 
 /**
  * Merge the change descriptors of a superseded and its superseding
@@ -53,11 +61,6 @@ export interface InboundScheduler {
 	flushNow(roomKey?: string): void;
 	/** Cancel the pending frame and drop all buffers. */
 	destroy(): void;
-}
-
-export interface InboundSchedulerHandleScheduler {
-	request(cb: () => void): unknown;
-	cancel(handle: unknown): void;
 }
 
 export interface CreateInboundSchedulerOptions {

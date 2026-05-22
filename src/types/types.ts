@@ -8,7 +8,16 @@ import type { Config } from "@puckeditor/core";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc as YDoc } from "yjs";
 
-import type { InboundSchedulerHandleScheduler } from "../utils/inbound-scheduler.js";
+/**
+ * Pluggable scheduler for the inbound coalescing buffer (H1). Defined here
+ * rather than in ../utils/inbound-scheduler.ts so the types module never
+ * imports the utils module — that import direction created a types ↔ utils
+ * cycle. `inbound-scheduler.ts` re-exports this type for back-compat.
+ */
+export interface InboundSchedulerHandleScheduler {
+	request(cb: () => void): unknown;
+	cancel(handle: unknown): void;
+}
 
 /**
  * Hot-path stage measured for P1 timing telemetry. Each kind keeps its
