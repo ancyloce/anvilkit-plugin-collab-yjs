@@ -24,7 +24,11 @@ import { Doc as YDoc } from "yjs";
 import { WebsocketProvider } from "y-websocket";
 
 const doc = new YDoc();
-const provider = new WebsocketProvider("ws://localhost:1234", "demo-room", doc);
+const provider = new WebsocketProvider(
+  "ws://localhost:21234",
+  "demo-room",
+  doc,
+);
 
 const adapter = createYjsAdapter({
   doc,
@@ -95,6 +99,8 @@ For the full data + UI bundle in a single factory call, import `createCollabPlug
 | `onSaveError`           | `(error: unknown) => void`             | none       | Outbound transport-failure observer. Without it, network 5xx errors surface as `unhandledRejection`.                                           |
 | `policy`                | `CollabPolicy`                         | none       | Symmetric RBAC bridge. `canEdit(node, peer)` is consulted inbound and outbound.                                                                |
 | `onPolicyViolation`     | `(violation: PolicyViolation) => void` | none       | Fired when `policy.canEdit` rejects.                                                                                                           |
+| `inboundScheduler`      | `InboundSchedulerHandleScheduler`      | `requestAnimationFrame` / `setTimeout` | (H1) Override the inbound coalescing scheduler. Defaults to `requestAnimationFrame` in the browser, `setTimeout` under SSR/Node. Intended for deterministic tests — do not set in production. |
+| `inboundBudgetMs`       | `number`                               | `16`       | (H1) Fallback inbound-flush cadence in ms, used when `requestAnimationFrame` is unavailable.                                                   |
 | `replaceBatchThreshold` | `number`                               | `50`       | Per-node `replace` dispatches below this threshold; above it the plugin falls back to a single `setData` call.                                 |
 
 ### `YjsSnapshotAdapter`
@@ -301,11 +307,18 @@ The wrapper holds a pending-timer reference. Call `destroy()` on unmount to canc
 
 ### Reference transport and production deployment
 
-A minimal `y-websocket` relay lives under `examples/y-websocket-server.mjs` in this repository (source-only, not in the published npm package):
+A minimal relay lives under `examples/y-websocket-server.mjs` in this repository (source-only, not in the published npm package):
 
 ```bash
+# Defaults to ws://127.0.0.1:21234
 node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
+
+# Override the port (positional arg or COLLAB_RELAY_PORT), or bind a
+# non-loopback host with COLLAB_RELAY_HOST:
+node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs 21300
 ```
+
+The relay listens on **port 21234 by default** (1234 and 11234 are avoided because Windows/WSL2 reserves them). Because `y-websocket@3` dropped its bundled server (`y-websocket/bin/utils`) and `@y/websocket-server` targets the incompatible `yjs-14` line, this relay **vendors the classic `y-protocols` sync/awareness server inline against the `yjs-13` stack** — wire-compatible with the demo's `y-websocket@3` client and independent of `y-websocket`'s server packaging. It is a reference for tests and demos, not a production server.
 
 For production deployments — auth, durable Postgres persistence, and Redis-backed horizontal scale-out via [Hocuspocus](https://tiptap.dev/hocuspocus) — follow the recipe at [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
 
