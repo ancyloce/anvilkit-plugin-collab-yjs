@@ -30,6 +30,15 @@ import {
 	NATIVE_VERSION_KEY,
 	readNativeTree,
 } from "./native-tree.js";
+import {
+	buildDeltaPayload,
+	decodePayload,
+	encodePayload,
+	KEYFRAME_INTERVAL,
+	type PayloadBackend,
+	reconstructPayload,
+	type StoredPayload,
+} from "./payload-chain.js";
 import { validatePeerInfo } from "./presence-schema.js";
 import {
 	SnapshotCorruptedError,
@@ -143,6 +152,29 @@ export function createSnapshots(
 		}
 	}
 
+	// I1 — deltas chained since the last full keyframe. The snapshot
+	// payload is stored as a keyframe every KEYFRAME_INTERVAL saves and a
+	// small delta in between (see ./payload-chain), so the shared Y.Doc no
+	// longer grows O(saves × document). Reconstruction walks back to the
+	// nearest keyframe, so this also bounds chain depth.
+	let savesSinceKeyframe = 0;
+	// A `Y.Map`-backed view the delta-chain reconstruct/re-root logic reads
+	// through. `orderedIds` is the canonical save order (also used for
+	// keyframe spacing and eviction re-rooting).
+	const payloadBackend: PayloadBackend = {
+		read(id) {
+			const raw = map.get(snapshotPayloadKey(id));
+			if (typeof raw !== "string") return undefined;
+			return decodePayload(raw);
+		},
+		write(id, payload) {
+			map.set(snapshotPayloadKey(id), encodePayload(payload));
+		},
+		orderedIds() {
+			return readSnapshotMetas(map).map((meta) => meta.id);
+		},
+	};
+
 	function readCurrentIR(): PageIR | undefined {
 		if (treeRoot) {
 			const fromTree = readNativeTree(treeRoot);
@@ -230,8 +262,34 @@ export function createSnapshots(
 			const localDiff = treeRoot
 				? diffIRNodesForLocalSave(prevLocalIR, ir, liveIR.getNodeHashes())
 				: undefined;
+			// I1 — choose the payload encoding. A non-root-change save is
+			// stored as a small DELTA built from the O(changed) `localDiff`
+			// (changed nodes' own content + child ids, plus removed ids and
+			// the page-level assets/metadata verbatim) against the previous
+			// snapshot. A full KEYFRAME is written on the first save, in
+			// legacy (no native tree) mode, on a structural (root-id) change,
+			// or every KEYFRAME_INTERVAL-th save to bound reconstruction
+			// depth. This replaces the previous full-document write per save
+			// (O(saves × doc) CRDT growth). `load`/`forceResync` reconstruct.
+			const prevSnapshotId = readSnapshotMetas(map).at(-1)?.id;
+			let payload: StoredPayload = { kind: "full", ir };
+			if (
+				treeRoot !== undefined &&
+				localDiff !== undefined &&
+				!localDiff.structural &&
+				prevSnapshotId !== undefined &&
+				savesSinceKeyframe < KEYFRAME_INTERVAL
+			) {
+				payload = buildDeltaPayload({
+					base: prevSnapshotId,
+					ir,
+					changed: localDiff.changed,
+					removed: localDiff.removed,
+				});
+			}
+			const isKeyframe = payload.kind === "full";
 			doc.transact(() => {
-				map.set(snapshotPayloadKey(snapshotMeta.id), encoded);
+				payloadBackend.write(snapshotMeta.id, payload);
 				map.set(snapshotMetaKey(snapshotMeta.id), JSON.stringify(snapshotMeta));
 				// I2 — bound the retained snapshot set. Every keystroke
 				// `save()` appended a full-document payload+meta to the
@@ -246,12 +304,33 @@ export function createSnapshots(
 				if (maxSnapshots > 0) {
 					const metas = readSnapshotMetas(map);
 					const overflow = metas.length - maxSnapshots;
-					for (let i = 0; i < overflow; i += 1) {
-						const victim = metas[i];
-						if (!victim) break;
-						map.delete(snapshotPayloadKey(victim.id));
-						map.delete(snapshotMetaKey(victim.id));
-						rememberPruned(victim.id);
+					if (overflow > 0) {
+						const victims = metas.slice(0, overflow);
+						const victimIds = new Set(victims.map((m) => m.id));
+						// Re-root before deleting: deltas chain linearly, so at
+						// most the FIRST surviving snapshot can be a delta based
+						// on an evicted one. Promote it to a self-contained
+						// keyframe (reconstructed while the victim chain is still
+						// present) so the bound stays a hard CRDT invariant and
+						// no survivor is orphaned. Best-effort: a corrupt chain
+						// here is left to surface as SnapshotCorrupted on load.
+						for (const meta of metas.slice(overflow)) {
+							try {
+								const record = payloadBackend.read(meta.id);
+								if (record?.kind === "delta" && victimIds.has(record.base)) {
+									const full = reconstructPayload(payloadBackend, meta.id);
+									payloadBackend.write(meta.id, { kind: "full", ir: full });
+								}
+							} catch {
+								/* leave as-is; load() will report corruption */
+							}
+							break;
+						}
+						for (const victim of victims) {
+							map.delete(snapshotPayloadKey(victim.id));
+							map.delete(snapshotMetaKey(victim.id));
+							rememberPruned(victim.id);
+						}
 					}
 				}
 				if (treeRoot) {
@@ -277,6 +356,10 @@ export function createSnapshots(
 				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
 			}, localPeer);
 			if (writeBlob) lastBlobCheckpointAt = now;
+			// Reset the keyframe counter when a full payload was written,
+			// otherwise advance it so the next KEYFRAME_INTERVAL-th save
+			// re-keyframes and reconstruction depth stays bounded.
+			savesSinceKeyframe = isKeyframe ? 0 : savesSinceKeyframe + 1;
 			// Keep the in-memory live view exactly in sync with what was
 			// just written so remote observers never reconstruct the
 			// whole tree just to learn current state (H3).
@@ -333,11 +416,13 @@ export function createSnapshots(
 				);
 			}
 			try {
-				return decodeIR(irRaw);
+				// Reconstruct via the delta-chain: keyframes return directly,
+				// deltas replay back to the nearest keyframe (./payload-chain).
+				return reconstructPayload(payloadBackend, id);
 			} catch (error) {
 				throw new SnapshotCorruptedError(
 					id,
-					`plugin-collab-yjs: failed to decode snapshot "${id}" — payload is corrupted or schema-drifted`,
+					`plugin-collab-yjs: failed to reconstruct snapshot "${id}" — payload/chain is corrupted or schema-drifted`,
 					{ cause: error },
 				);
 			}
@@ -352,9 +437,21 @@ export function createSnapshots(
 			const metas = readSnapshotMetas(map);
 			const latest = metas[metas.length - 1];
 			if (!latest) return null;
-			const irRaw = map.get(snapshotPayloadKey(latest.id));
-			if (typeof irRaw !== "string") return null;
-			const restored = decodeIR(irRaw);
+			if (typeof map.get(snapshotPayloadKey(latest.id)) !== "string") {
+				return null;
+			}
+			let restored: PageIR;
+			try {
+				restored = reconstructPayload(payloadBackend, latest.id);
+			} catch {
+				// Latest snapshot's chain is unreadable — nothing safe to
+				// re-emit; surface as a no-op resync.
+				return null;
+			}
+			// The blob must hold a canonical encoded IR (readCurrentIR
+			// decodes it), so re-encode the reconstructed snapshot rather
+			// than writing the raw delta/keyframe payload string.
+			const restoredBlob = encodeIR(restored);
 			doc.transact(() => {
 				if (treeRoot) {
 					const applyStart = nowMs();
@@ -364,7 +461,7 @@ export function createSnapshots(
 				// forceResync is an explicit authoritative re-emit —
 				// always refresh the blob and reset the checkpoint clock
 				// so cold/legacy readers immediately converge.
-				map.set(PAGE_IR_KEY, irRaw);
+				map.set(PAGE_IR_KEY, restoredBlob);
 				map.set(LAST_PEER_KEY, JSON.stringify(localPeer));
 			}, localPeer);
 			lastBlobCheckpointAt = Date.now();

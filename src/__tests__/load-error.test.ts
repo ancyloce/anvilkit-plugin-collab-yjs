@@ -31,7 +31,7 @@ describe("createYjsAdapter load() error context (M7)", () => {
 			expect(e.name).toBe("SnapshotCorruptedError");
 			expect(e.id).toBe(id);
 			expect(e.message).toContain(id);
-			expect(e.message).toContain("failed to decode snapshot");
+			expect(e.message).toContain("failed to reconstruct snapshot");
 			// Node's Error 'cause' is on the instance directly.
 			expect((e as Error & { cause?: unknown }).cause).toBeDefined();
 		}
