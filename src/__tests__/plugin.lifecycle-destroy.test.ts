@@ -97,5 +97,25 @@ describe("A3 — plugin + debounced adapter lifecycle destroy", () => {
 		expect(onSaveError.mock.calls[0]?.[0]).toBeInstanceOf(
 			DebouncedAdapterDestroyedError,
 		);
+
+		// Teardown is benign noise, not a persistence failure: it logs at
+		// `debug`, never as an `error`-level "outbound save failed".
+		const logCalls = ctx._mocks.logCalls;
+		expect(logCalls).toEqual(
+			expect.arrayContaining([
+				expect.arrayContaining([
+					"debug",
+					expect.stringContaining("torn down before flush"),
+				]),
+			]),
+		);
+		expect(
+			logCalls.some(
+				([level, message]) =>
+					level === "error" &&
+					typeof message === "string" &&
+					message.includes("outbound save failed"),
+			),
+		).toBe(false);
 	});
 });

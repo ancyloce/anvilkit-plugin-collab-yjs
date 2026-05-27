@@ -19,6 +19,7 @@ import type {
 	RemoteChange,
 	ValidationFailure,
 } from "./types/types.js";
+import { DebouncedAdapterDestroyedError } from "./utils/debounced-adapter.js";
 import {
 	createInboundScheduler,
 	type InboundScheduler,
@@ -341,23 +342,43 @@ export function createCollabDataPlugin(
 							localShadow.pendingAt = nowMs();
 							const result = options.adapter.save(ir, {});
 							Promise.resolve(result).catch((error: unknown) => {
-								changeCtx.log(
-									"error",
-									"plugin-collab-yjs: outbound save failed.",
-									{
-										error:
-											error instanceof Error ? error.message : String(error),
-									},
-								);
+								// A pending debounced save rejecting with
+								// `DebouncedAdapterDestroyedError` is expected
+								// teardown noise: the adapter was destroyed (Studio
+								// unmount / plugin remount) before the flush window
+								// elapsed. It is not a persistence failure, so log
+								// it at `debug` rather than `error`. Genuine save
+								// failures stay at `error`.
+								//
+								// Pass the raw error through either way so core's
+								// `normalizeLogError` captures name + message +
+								// stack — pre-extracting `error.message` would drop
+								// the name/stack and collapse an empty-message Error
+								// to `{}` in the dev overlay (see the regression
+								// tests in plugin.save-error.test.ts).
+								if (error instanceof DebouncedAdapterDestroyedError) {
+									changeCtx.log(
+										"debug",
+										"plugin-collab-yjs: outbound save skipped — adapter torn down before flush (benign unmount/remount).",
+										{ error },
+									);
+								} else {
+									changeCtx.log(
+										"error",
+										"plugin-collab-yjs: outbound save failed.",
+										{ error },
+									);
+								}
+								// `onSaveError` is a documented opt-in hook; teardown
+								// is still surfaced through it (see the A3 lifecycle
+								// test) so consumers that care can react.
 								options.onSaveError?.(error);
 							});
 						} catch (error) {
 							changeCtx.log(
 								"error",
 								"plugin-collab-yjs: outbound save threw synchronously.",
-								{
-									error: error instanceof Error ? error.message : String(error),
-								},
+								{ error },
 							);
 							options.onSaveError?.(error);
 						}
@@ -411,7 +432,7 @@ async function hydrateLatestSnapshot(
 		);
 	} catch (error) {
 		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
-			error: error instanceof Error ? error.message : String(error),
+			error,
 		});
 	}
 }
@@ -917,12 +938,7 @@ function runValidation(
 	if (failure) {
 		ctx.log("warn", "plugin-collab-yjs: remote IR rejected by validator.", {
 			kind: failure.kind,
-			error:
-				failure.error instanceof Error
-					? failure.error.message
-					: failure.error !== undefined
-						? String(failure.error)
-						: undefined,
+			error: failure.error,
 		});
 		options.onValidationFailure?.(failure);
 	}

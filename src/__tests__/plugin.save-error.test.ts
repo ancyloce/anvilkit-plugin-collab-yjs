@@ -103,6 +103,46 @@ describe("createCollabPlugin onSaveError", () => {
 		);
 	});
 
+	it("logs the raw Error (name + stack survive) when message is empty", async () => {
+		// An Error whose `message` is empty used to collapse the logged meta
+		// to `{ error: undefined }` -> rendered as a bare `{}` in the Next dev
+		// overlay, hiding the name/stack. The plugin now forwards the raw
+		// error so core's `normalizeLogError` can surface name + stack.
+		class TornDownError extends Error {
+			override readonly name = "TornDownError";
+			constructor() {
+				super("");
+			}
+		}
+		const adapter: SnapshotAdapter = {
+			save: () => Promise.reject(new TornDownError()),
+			list: () => [] as SnapshotMeta[],
+			load: () => createFakePageIR(),
+		};
+		const ctx = makeCtx();
+		const harness = await registerPlugin(
+			createCollabPlugin({ adapter, puckConfig: STUB_CONFIG }),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		const local = createFakePageIR({ rootId: "local" });
+		await harness.registration.hooks?.onDataChange?.(ctx, irToPuckData(local));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const saveFailedCall = ctx._mocks.logCalls.find(
+			([level, message]) =>
+				level === "error" &&
+				typeof message === "string" &&
+				message.includes("outbound save failed"),
+		);
+		expect(saveFailedCall).toBeDefined();
+		const meta = saveFailedCall?.[2] as { error?: unknown } | undefined;
+		expect(meta?.error).toBeInstanceOf(Error);
+		expect((meta?.error as Error).name).toBe("TornDownError");
+	});
+
 	it("does not throw when onSaveError is omitted (still logs)", async () => {
 		const adapter: SnapshotAdapter = {
 			save: () => Promise.reject(new Error("silent failure")),
