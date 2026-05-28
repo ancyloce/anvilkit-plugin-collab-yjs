@@ -167,6 +167,16 @@ export function createCollabDataPlugin(
 	// synchronous post-init state. This flag makes the two paths
 	// mutually exclusive so hydration never runs twice.
 	let hydrationDone = false;
+	// C3 — gate the live scheduler flush on Puck-API readiness. A real
+	// relay (e.g. Hocuspocus with server-side persistence) pushes its
+	// stored snapshot to the client the instant the WebSocket syncs,
+	// which can land AFTER `onInit` wires `subscribe` but BEFORE Puck's
+	// effect-time binder has captured `getPuckApi()`. Flushing then would
+	// call an unbound `getPuckApi()`, throw `PUCK_API_UNBOUND`, and
+	// surface as "remote update dispatch failed". The hydration path
+	// already guards this (probe + defer to `onReady`); this flag extends
+	// the same guard to the scheduler flush.
+	let puckReady = false;
 	const pendingRemoteData = new Map<string, PendingRemoteEntry>();
 	const localShadow: LocalShadow = { pendingAt: 0 };
 	const ephemeralPeer = options.localPeer ?? createEphemeralPeer();
@@ -213,6 +223,13 @@ export function createCollabDataPlugin(
 								queueDelayMs,
 								latestChanged,
 							) => {
+								// Hold inbound dispatch until Puck's API is bound.
+								// A pre-ready flush would crash in `getPuckApi()`;
+								// the scheduler is latest-wins, so nothing is lost —
+								// `onReady`'s `hydrateLatestSnapshot` paints the
+								// current doc state, then `flushNow()` drains any
+								// update buffered across the readiness flip.
+								if (!puckReady) return;
 								telemetry.recordTiming?.("inboundQueueDelay", queueDelayMs);
 								dispatchRemoteIR(
 									initCtx,
@@ -265,6 +282,11 @@ export function createCollabDataPlugin(
 								telemetry,
 							);
 						}
+						// Headless / test contexts expose a bound `getPuckApi()`
+						// during `onInit`, so the scheduler may flush immediately.
+						// Real mounts keep `puckReady` false here and flip it in
+						// `onReady` once the binder has captured the API.
+						puckReady = puckApiReady;
 					},
 					async onReady(readyCtx) {
 						// C3 — real-mount hydration path. Runs once the Puck-API
@@ -286,6 +308,11 @@ export function createCollabDataPlugin(
 							locationIndex,
 							telemetry,
 						);
+						// Puck's API is now bound. Allow scheduler flushes, then
+						// drain any inbound update buffered during the mount window
+						// (an empty/no-op buffer is a cheap rAF-cancel + return).
+						puckReady = true;
+						scheduler?.flushNow();
 					},
 					onDataChange(changeCtx, data) {
 						// H2 — suppress every onDataChange emitted during

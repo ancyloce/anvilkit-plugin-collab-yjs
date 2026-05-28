@@ -205,6 +205,71 @@ describe("createCollabDataPlugin", () => {
 		);
 	});
 
+	it("defers inbound dispatch until Puck's API is bound (no dispatch failure during the mount window)", async () => {
+		// Regression: a real relay (e.g. Hocuspocus + server-side
+		// persistence) pushes its stored snapshot the instant the
+		// WebSocket syncs — which can land AFTER `onInit` wires
+		// `subscribe` but BEFORE Puck's effect-time binder captures
+		// `getPuckApi()`. Flushing then called an unbound `getPuckApi()`,
+		// threw `PUCK_API_UNBOUND`, and surfaced as "remote update
+		// dispatch failed".
+		const adapter = fakeAdapter();
+		let apiBound = false;
+		const dispatch = vi.fn();
+		const ctx = createFakeStudioContext({
+			getPuckApi: vi.fn(() => {
+				if (!apiBound) {
+					throw new Error(
+						"StudioPluginContext.getPuckApi() was called before <Puck> finished mounting.",
+					);
+				}
+				return { dispatch } as unknown as PuckApi;
+			}) as unknown as StudioPluginContext["getPuckApi"],
+		});
+		const harness = await registerPlugin(
+			createCollabDataPlugin({
+				adapter,
+				puckConfig: STUB_CONFIG,
+				inboundScheduler: syncInboundScheduler(),
+			}),
+			{ ctx },
+		);
+		await harness.runInit();
+
+		// Remote snapshot arrives during the mount window (API unbound).
+		const early = createFakePageIR({ rootId: "early-remote" });
+		adapter.pushUpdate(early);
+
+		// Gated: no dispatch, and crucially no dispatch-failure log.
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(ctx._mocks.logCalls).not.toEqual(
+			expect.arrayContaining([
+				expect.arrayContaining([
+					"error",
+					expect.stringContaining("remote update dispatch failed"),
+				]),
+			]),
+		);
+
+		// Puck mounts; onReady binds the API and opens the gate.
+		apiBound = true;
+		await harness.runReady();
+		dispatch.mockClear();
+
+		// A later remote update now dispatches normally — no error log.
+		const late = createFakePageIR({ rootId: "late-remote" });
+		adapter.pushUpdate(late);
+		expect(dispatch).toHaveBeenCalled();
+		expect(ctx._mocks.logCalls).not.toEqual(
+			expect.arrayContaining([
+				expect.arrayContaining([
+					"error",
+					expect.stringContaining("remote update dispatch failed"),
+				]),
+			]),
+		);
+	});
+
 	it("validateRemoteIR null return rejects the dispatch and logs a warning", async () => {
 		const adapter = fakeAdapter();
 		const dispatch = vi.fn();
