@@ -62,7 +62,7 @@
 		"@anvilkit/utils": "workspace:*",
 		"lucide-react": "^1.16.0",
 		"y-protocols": "^1.0.7",
-		"yjs": "^13.6.30"
+		"yjs": "^13.6.31"
 	},
 	"scripts": {
 		"build": "rslib build",
@@ -84,9 +84,9 @@
 		"@anvilkit/typescript-config": "workspace:*",
 		"@anvilkit/vitest-config": "workspace:*",
 		"@puckeditor/core": "^0.21.2",
-		"@rslib/core": "^0.21.5",
+		"@rslib/core": "^0.22.0",
 		"@types/node": "^25.9.1",
-		"@types/react": "19.2.14",
+		"@types/react": "^19.2.14",
 		"@types/react-dom": "19.2.3",
 		"esbuild": "^0.28.0",
 		"fake-indexeddb": "^6.2.5",
