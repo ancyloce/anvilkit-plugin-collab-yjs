@@ -5,6 +5,7 @@ import type {
 	InboundSchedulerHandleScheduler,
 	RemoteChange,
 } from "../types/types.js";
+import { nowMs } from "./metrics.js";
 
 // `InboundSchedulerHandleScheduler` now lives in ../types/types.ts to break
 // the types ↔ utils import cycle. Re-exported here so existing importers
@@ -158,7 +159,9 @@ export function createInboundScheduler(
 		const entry = buffers.get(roomKey);
 		if (!entry) return;
 		buffers.delete(roomKey);
-		const queueDelayMs = Math.max(0, Date.now() - entry.firstEnqueuedAt);
+		// F12 — monotonic clock so an NTP step / sleep-resume can't poison
+		// the inboundQueueDelay metric (matches every other recordTiming).
+		const queueDelayMs = Math.max(0, nowMs() - entry.firstEnqueuedAt);
 		options.flush(roomKey, entry.ir, entry.peer, queueDelayMs, entry.changed);
 	}
 
@@ -193,7 +196,7 @@ export function createInboundScheduler(
 				buffers.set(roomKey, {
 					ir,
 					peer,
-					firstEnqueuedAt: Date.now(),
+					firstEnqueuedAt: nowMs(),
 					changed,
 				});
 			}
