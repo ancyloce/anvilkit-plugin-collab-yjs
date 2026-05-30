@@ -1,15 +1,10 @@
 {
-	"extends": "@anvilkit/typescript-config/base.json",
+	"extends": "@anvilkit/typescript-config/react-library-bundler.json",
 	"compilerOptions": {
-		"jsx": "react-jsx",
-		"module": "ESNext",
-		"moduleResolution": "bundler",
 		"lib": ["ES2022", "DOM"],
 		"outDir": "dist",
 		"rootDir": "src",
-		"types": ["react", "react-dom", "node"],
-		"useDefineForClassFields": true,
-		"verbatimModuleSyntax": true
+		"types": ["react", "react-dom", "node"]
 	},
 	"include": ["src/**/*.ts", "src/**/*.tsx"],
 	"exclude": [
