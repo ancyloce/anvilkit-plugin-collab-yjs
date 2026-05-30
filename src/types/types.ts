@@ -14,10 +14,16 @@ import type { Doc as YDoc } from "yjs";
  * imports the utils module — that import direction created a types ↔ utils
  * cycle. `inbound-scheduler.ts` re-exports this type for back-compat.
  */
-export interface InboundSchedulerHandleScheduler {
+export interface FrameScheduler {
 	request(cb: () => void): unknown;
 	cancel(handle: unknown): void;
 }
+
+/**
+ * @deprecated Renamed to {@link FrameScheduler}; this alias is retained
+ * for one minor for back-compat (F16).
+ */
+export type InboundSchedulerHandleScheduler = FrameScheduler;
 
 /**
  * Hot-path stage measured for P1 timing telemetry. Each kind keeps its
