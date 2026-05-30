@@ -45,7 +45,7 @@
 ## 0.10.0-rc.0 — 2026-05-14
 
 Long-term plan execution (L1-L6 from
-`docs/plan/plugin-collab-yjs-development-plan-2026-05-13.md`). Closes
+`docs/archive/plans/plugin-collab-yjs-development-plan-2026-05-13.md`). Closes
 the GA story on encoding default, snapshot diff API, presence
 hardening, cross-tab persistence, and Hocuspocus production guidance.
 193 unit tests + 5 integration tests passing.
