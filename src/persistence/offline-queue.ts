@@ -15,6 +15,15 @@ const DEFAULT_COMPACT_EVERY = 200;
 export interface OfflineQueue {
 	append(update: Uint8Array): void;
 	drain(): Promise<readonly Uint8Array[]>;
+	/**
+	 * M3 — crash-safe compaction: merge the queued backlog into a single
+	 * equivalent update (append-then-delete) WITHOUT dropping unacked
+	 * state. Called on reconnect/`synced` instead of a destructive
+	 * `drain()`, so a crash before the server durably persists the
+	 * replicated doc cannot lose the offline edits. No-op when compaction
+	 * is disabled (`compactEvery: Infinity`).
+	 */
+	compact(): Promise<void>;
 	hydrate(): Promise<readonly Uint8Array[]>;
 	size(): number;
 	destroy(): void;
@@ -113,6 +122,7 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 		drain(): Promise<readonly Uint8Array[]> {
 			return input.getBackend().drain();
 		},
+		compact,
 		hydrate(): Promise<readonly Uint8Array[]> {
 			return input.getBackend().hydrate();
 		},
