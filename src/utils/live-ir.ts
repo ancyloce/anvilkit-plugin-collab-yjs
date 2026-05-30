@@ -104,6 +104,12 @@ export interface LiveIROptions {
 
 export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 	const cache = new Map<string, CachedNode>();
+	// F10 — a live id → hash map kept in lock-step with `cache` at every
+	// set/delete/clear site below, so `getNodeHashes()` can return it
+	// directly instead of allocating a fresh `Map` over the whole cache on
+	// every save. The hash already lives inside each `CachedNode`; this
+	// just exposes it without the per-save clone.
+	const hashes = new Map<string, string>();
 	let rootId: string | undefined;
 	let assets: PageIR["assets"] = [];
 	let metadata: PageIR["metadata"] = {};
@@ -111,6 +117,7 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 
 	function seedFromIR(ir: PageIR): void {
 		cache.clear();
+		hashes.clear();
 		rootId = ir.root.id;
 		assets = ir.assets;
 		metadata = ir.metadata;
@@ -119,11 +126,13 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 			const node = stack.pop();
 			if (!node) continue;
 			const { children, ...own } = node;
+			const hash = hashNodeContent(node);
 			cache.set(node.id, {
 				node: { ...own },
 				childIds: children ? children.map((c) => c.id) : [],
-				hash: hashNodeContent(node),
+				hash,
 			});
+			hashes.set(node.id, hash);
 			if (children) for (const c of children) stack.push(c);
 		}
 		seeded = true;
@@ -184,14 +193,20 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 			// added nodes too, so updating those entries plus dropping
 			// `removed` keeps the materialized tree identical to a full
 			// `setLocal(ir)` for a relink local save.
-			if (removed) for (const id of removed) cache.delete(id);
+			if (removed)
+				for (const id of removed) {
+					cache.delete(id);
+					hashes.delete(id);
+				}
 			for (const [id, node] of changed) {
 				const { children, ...own } = node;
+				const hash = hashNodeContent(node);
 				cache.set(id, {
 					node: { ...own },
 					childIds: children ? children.map((c) => c.id) : [],
-					hash: hashNodeContent(node),
+					hash,
 				});
+				hashes.set(id, hash);
 			}
 		},
 		applyRemoteFullBlob: seedFromIR,
@@ -220,6 +235,7 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 			for (const id of toRead) {
 				if (removed?.has(id)) {
 					cache.delete(id);
+					hashes.delete(id);
 					continue;
 				}
 				const shallow = readNodeShallow(treeRoot, id);
@@ -230,19 +246,29 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 					// or partial IR to conflict detection / Puck.
 					return fullRebuild(treeRoot);
 				}
+				const hash = hashNodeContent(shallow.node as unknown as PageIRNode);
 				cache.set(id, {
 					node: shallow.node,
 					childIds: shallow.childIds,
-					hash: hashNodeContent(shallow.node as unknown as PageIRNode),
+					hash,
 				});
+				hashes.set(id, hash);
 			}
-			if (removed) for (const id of removed) cache.delete(id);
+			if (removed)
+				for (const id of removed) {
+					cache.delete(id);
+					hashes.delete(id);
+				}
 			return materialize();
 		},
 		getNodeHashes(): ReadonlyMap<string, string> {
-			const out = new Map<string, string>();
-			for (const [id, c] of cache) out.set(id, c.hash);
-			return out;
+			// F10 — return the live `hashes` map directly (no per-save
+			// clone). The sole consumer, `diffIRNodesForLocalSave` in
+			// `snapshots.save()`, reads it synchronously (read-only `.get()`
+			// inside its own loop) BEFORE the next cache mutation, so the
+			// shared reference is safe. Kept in lock-step with `cache` at
+			// every set/delete/clear site above.
+			return hashes;
 		},
 	};
 }
