@@ -47,6 +47,9 @@ export function createAwarenessBridge(
 	awareness.on("change", churnHandler);
 
 	const peerChangeHandlers = new Set<() => void>();
+	// H1 — per-subscription rAF cancelers so `destroy()` can drop any
+	// pending coalesced inbound-presence frame, not just the listeners.
+	const frameCancelers = new Set<() => void>();
 
 	const maxPerSecond =
 		rateLimit?.maxPerSecond ?? DEFAULT_PRESENCE_RATE_PER_SECOND;
@@ -100,6 +103,12 @@ export function createAwarenessBridge(
 			// cost O(changed) per event rather than O(peers).
 			const cache = new Map<number, PresenceState>();
 			let seeded = false;
+			// H1 — coalesce the fan-out into the consumer (React setState)
+			// to at most one emit per animation frame, mirroring the
+			// outbound publisher's batching. yjs does NOT cross-peer batch
+			// awareness frames, so a 50-cursor room would otherwise drive
+			// ~1,500 synchronous callbacks/sec on every client.
+			let frame = 0;
 
 			const refreshClient = (clientId: number): void => {
 				const value = awareness.getStates().get(clientId);
@@ -116,30 +125,60 @@ export function createAwarenessBridge(
 				}
 			};
 
+			const seedAll = (): void => {
+				// Initial subscribe (no delta) or a defensive full rebuild:
+				// validate every current peer once.
+				cache.clear();
+				for (const clientId of awareness.getStates().keys()) {
+					refreshClient(clientId);
+				}
+				seeded = true;
+			};
+
+			const emit = (): void => {
+				frame = 0;
+				callback([...cache.values()]);
+			};
+			const schedule = (): void => {
+				if (frame !== 0) return;
+				frame =
+					typeof requestAnimationFrame === "function"
+						? requestAnimationFrame(emit)
+						: (setTimeout(emit, 16) as unknown as number);
+			};
+			const cancelFrame = (): void => {
+				if (frame === 0) return;
+				if (typeof cancelAnimationFrame === "function") {
+					cancelAnimationFrame(frame);
+				} else {
+					clearTimeout(frame);
+				}
+				frame = 0;
+			};
+
 			const handler = (changes?: {
 				added: number[];
 				updated: number[];
 				removed: number[];
 			}) => {
 				if (!seeded || !changes) {
-					// Initial subscribe (no delta) or a defensive full
-					// rebuild: validate every current peer once.
-					cache.clear();
-					for (const clientId of awareness.getStates().keys()) {
-						refreshClient(clientId);
-					}
-					seeded = true;
+					seedAll();
 				} else {
 					for (const clientId of changes.added) refreshClient(clientId);
 					for (const clientId of changes.updated) refreshClient(clientId);
 					for (const clientId of changes.removed) cache.delete(clientId);
 				}
-				callback([...cache.values()]);
+				schedule();
 			};
 			awareness.on("change", handler);
 			peerChangeHandlers.add(handler);
-			handler();
+			frameCancelers.add(cancelFrame);
+			// First paint must not wait a frame: seed + emit synchronously.
+			seedAll();
+			callback([...cache.values()]);
 			return () => {
+				cancelFrame();
+				frameCancelers.delete(cancelFrame);
 				awareness.off("change", handler);
 				peerChangeHandlers.delete(handler);
 			};
@@ -155,6 +194,20 @@ export function createAwarenessBridge(
 				awareness.off("change", handler);
 			}
 			peerChangeHandlers.clear();
+			// H1 — drop any pending coalesced inbound-presence frames.
+			for (const cancel of frameCancelers) cancel();
+			frameCancelers.clear();
+			// F9 — retract local presence on teardown. The host owns the
+			// Awareness instance and the documented page-swap pattern is a
+			// `key` remount against the SAME doc+awareness (same clientID),
+			// so without this the stale local cursor lingers in
+			// getStates() and remote peers render a frozen ghost cursor the
+			// y-protocols timeout never expires.
+			try {
+				awareness.setLocalState(null);
+			} catch {
+				// Host already tore down its Awareness instance.
+			}
 		},
 	};
 }
