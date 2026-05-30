@@ -94,25 +94,81 @@ describe("createYjsAdapter", () => {
 	});
 
 	it("presence broadcasts via y-protocols Awareness", () => {
-		const doc = new YDoc();
-		const awareness = new Awareness(doc);
-		const adapter = createYjsAdapter({
-			doc,
-			awareness,
-			peer: { id: "alice" },
-		});
-		const callback = vi.fn();
-		adapter.presence?.onPeerChange(callback);
+		// H1 — `onPeerChange` coalesces post-seed emits to at most one per
+		// animation frame (here the node-fallback `setTimeout(…, 16)`), so the
+		// `update()` broadcast lands a frame later, not synchronously. Drive
+		// the frame with fake timers to keep the assertion deterministic.
+		vi.useFakeTimers();
+		try {
+			const doc = new YDoc();
+			const awareness = new Awareness(doc);
+			const adapter = createYjsAdapter({
+				doc,
+				awareness,
+				peer: { id: "alice" },
+			});
+			const callback = vi.fn();
+			adapter.presence?.onPeerChange(callback);
 
-		const state: PresenceState = {
-			peer: { id: "alice", color: "#f43f5e" },
-			cursor: { x: 12, y: 34 },
-		};
-		adapter.presence?.update(state);
+			const state: PresenceState = {
+				peer: { id: "alice", color: "#f43f5e" },
+				cursor: { x: 12, y: 34 },
+			};
+			adapter.presence?.update(state);
+			vi.advanceTimersByTime(16);
 
-		expect(callback).toHaveBeenCalled();
-		const lastCall = callback.mock.calls.at(-1)?.[0] as PresenceState[];
-		expect(lastCall).toContainEqual(state);
+			expect(callback).toHaveBeenCalled();
+			const lastCall = callback.mock.calls.at(-1)?.[0] as PresenceState[];
+			expect(lastCall).toContainEqual(state);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("H1: coalesces a burst of awareness changes into one emit per frame", () => {
+		// Guards the High-severity inbound-coalescing fix: many awareness
+		// `change` events in a single frame must collapse to at most one
+		// `onPeerChange` emit (not one per event). Reverting H1 to a
+		// synchronous emit makes the burst fire the callback 3× and trips
+		// the `not.toHaveBeenCalled()` assertion below.
+		vi.useFakeTimers();
+		try {
+			const doc = new YDoc();
+			const awareness = new Awareness(doc);
+			const adapter = createYjsAdapter({
+				doc,
+				awareness,
+				peer: { id: "alice" },
+			});
+			const callback = vi.fn();
+			adapter.presence?.onPeerChange(callback);
+			// First paint seeds + emits synchronously (must NOT wait a frame).
+			expect(callback).toHaveBeenCalledTimes(1);
+
+			callback.mockClear();
+			// Three awareness changes inside one frame (token bucket starts
+			// full, so none are rate-dropped) — each fires a `change` event.
+			adapter.presence?.update({
+				peer: { id: "alice" },
+				cursor: { x: 1, y: 1 },
+			});
+			adapter.presence?.update({
+				peer: { id: "alice" },
+				cursor: { x: 2, y: 2 },
+			});
+			adapter.presence?.update({
+				peer: { id: "alice" },
+				cursor: { x: 3, y: 3 },
+			});
+			// Still coalescing — the burst has not yet driven any emit.
+			expect(callback).not.toHaveBeenCalled();
+
+			// The pending frame fires exactly one coalesced emit.
+			vi.advanceTimersByTime(16);
+			expect(callback).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("presence subscribers receive the current awareness state immediately", () => {
