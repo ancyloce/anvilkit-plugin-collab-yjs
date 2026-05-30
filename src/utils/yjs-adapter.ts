@@ -118,10 +118,19 @@ export function createYjsAdapter(
 		onSynced: () => {
 			snapshots.resetQueuedEdits();
 			conflicts.closeWindow();
-			// Drain any updates that piled up while offline. Best-effort:
-			// failures are surfaced via `persistence.options.onFault`.
+			// M3 — compact (merge) the offline backlog rather than
+			// destructively draining it. `synced` is a connection/
+			// initial-sync signal, NOT a server-persistence ack; the live
+			// Y.Doc already carries the offline edits and replicates them
+			// via sync, so the durable queue is reload-survival. A
+			// `drain()` here deletes that survival copy before the server
+			// has durably accepted the replicated state — a crash in that
+			// window would lose the edits from both the queue and the
+			// reloaded doc. `compact()` bounds replay length without
+			// dropping unacked state. Best-effort: faults surface via
+			// `persistence.options.onFault`.
 			if (persistence.hasDurableQueue) {
-				void persistence.offlineQueue.drain();
+				void persistence.offlineQueue.compact();
 			}
 		},
 	});
