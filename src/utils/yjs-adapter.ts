@@ -146,6 +146,15 @@ export function createYjsAdapter(
 		computeDelta: options.computeDelta ?? false,
 		maxSnapshots: options.maxSnapshots ?? 200,
 	});
+	// Activate the host `connectionSource` subscription now that every
+	// module its `emit` path reaches — `snapshots` (via `onSynced`/
+	// `getQueuedEdits`), `conflicts`, `persistence` — is constructed.
+	// `createConnectionStatus` deliberately does NOT subscribe in its
+	// constructor: a source that emits its current state synchronously on
+	// attach (the demo Hocuspocus BYO transport, the managed transport)
+	// would otherwise run `onSynced` against `snapshots` before this point —
+	// a temporal-dead-zone `ReferenceError` at `<Studio>` mount.
+	connectionStatus.start();
 	const awarenessBridge = createAwarenessBridge(
 		awareness,
 		metrics,

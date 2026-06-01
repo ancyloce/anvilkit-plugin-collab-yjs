@@ -7,6 +7,13 @@ export interface ConnectionStatusModule {
 	onStatusChange(callback: (status: ConnectionStatus) => void): Unsubscribe;
 	emit(next: ConnectionStatus): void;
 	notifySubscribeRegistered(): void;
+	/**
+	 * Subscribe to the host `connectionSource`. Split out of the
+	 * constructor so the caller controls *when* the source can first emit
+	 * — see the note on {@link createConnectionStatus}. Idempotent: a
+	 * second call is a no-op. A no-op when no `connectionSource` is wired.
+	 */
+	start(): void;
 	destroy(): void;
 }
 
@@ -36,6 +43,16 @@ export interface ConnectionStatusOptions {
  * `connecting` to `synced` on the first `notifySubscribeRegistered`
  * call so single-process demos and tests behave sensibly without
  * provider plumbing.
+ *
+ * The `connectionSource` subscription is **not** wired in the
+ * constructor — the caller must invoke {@link ConnectionStatusModule.start}
+ * once every module its `emit` path reaches (`onSynced`/`getQueuedEdits`
+ * in `createYjsAdapter`, which read the snapshot module) has been
+ * constructed. A source that emits its current state *synchronously* on
+ * attach (the documented "emit on attach" pattern — the demo Hocuspocus
+ * transport and the managed transport both do it) would otherwise run
+ * `onSynced` against `snapshots` before it exists: a temporal-dead-zone
+ * `ReferenceError` at `<Studio>` mount.
  */
 export function createConnectionStatus(
 	options: ConnectionStatusOptions,
@@ -43,6 +60,7 @@ export function createConnectionStatus(
 	const statusListeners = new Set<(status: ConnectionStatus) => void>();
 	let currentStatus: ConnectionStatus = { kind: "connecting" };
 	let unsubscribeSource: (() => void) | undefined;
+	let started = false;
 
 	function emit(next: ConnectionStatus): void {
 		let effective: ConnectionStatus = next;
@@ -59,10 +77,6 @@ export function createConnectionStatus(
 				// listener errors must not poison sibling listeners.
 			}
 		}
-	}
-
-	if (options.connectionSource) {
-		unsubscribeSource = options.connectionSource(emit);
 	}
 
 	return {
@@ -84,6 +98,20 @@ export function createConnectionStatus(
 		notifySubscribeRegistered(): void {
 			if (!options.connectionSource && currentStatus.kind === "connecting") {
 				emit({ kind: "synced", since: new Date().toISOString() });
+			}
+		},
+		start(): void {
+			// Deferred until the adapter has built every module `emit` can
+			// reach (the snapshot module that `onSynced`/`getQueuedEdits`
+			// read). A `connectionSource` that emits synchronously on attach
+			// would otherwise TDZ-crash here — see the note on
+			// `createConnectionStatus`. Idempotent.
+			if (started) {
+				return;
+			}
+			started = true;
+			if (options.connectionSource) {
+				unsubscribeSource = options.connectionSource(emit);
 			}
 		},
 		destroy(): void {

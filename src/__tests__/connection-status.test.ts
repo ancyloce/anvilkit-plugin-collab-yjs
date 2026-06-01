@@ -68,6 +68,38 @@ describe("createYjsAdapter onStatusChange / connectionSource", () => {
 		});
 	});
 
+	it("tolerates a connectionSource that emits `synced` synchronously on subscribe", () => {
+		// Regression for the `/collab` BYO Hocuspocus transport: its source
+		// emits the provider's CURRENT state synchronously on attach (the
+		// documented "emit on attach" pattern). The adapter subscribes the
+		// source during construction, so a synchronous `synced` ran the
+		// connection FSM's `onSynced` — which reads the snapshot module —
+		// *before* `snapshots` was declared: a `ReferenceError: Cannot access
+		// 'snapshots' before initialization` that crashed `<Studio>` mount with
+		// `Plugin "@anvilkit/collab" failed to register`.
+		const emitSyncedOnAttach: ConnectionSource = (emit) => {
+			emit({ kind: "synced", since: "2026-05-31T00:00:00Z" });
+			return () => undefined;
+		};
+		expect(() =>
+			createYjsAdapter({
+				doc: new YDoc(),
+				connectionSource: emitSyncedOnAttach,
+			}),
+		).not.toThrow();
+
+		// The synchronous emit is honored: the adapter reports `synced`
+		// immediately, with no auto-flip listener needed.
+		const adapter = createYjsAdapter({
+			doc: new YDoc(),
+			connectionSource: emitSyncedOnAttach,
+		});
+		expect(adapter.getStatus()).toEqual({
+			kind: "synced",
+			since: "2026-05-31T00:00:00Z",
+		});
+	});
+
 	it("does NOT auto-flip to `synced` on subscribe when a connectionSource is wired", () => {
 		const source: ConnectionSource = () => () => undefined;
 		const adapter = createYjsAdapter({
