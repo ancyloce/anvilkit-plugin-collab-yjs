@@ -17,6 +17,16 @@
 				"default": "./dist/index.cjs"
 			}
 		},
+		"./transport": {
+			"import": {
+				"types": "./dist/transport.d.ts",
+				"default": "./dist/transport.js"
+			},
+			"require": {
+				"types": "./dist/transport.d.cts",
+				"default": "./dist/transport.cjs"
+			}
+		},
 		"./*": {
 			"import": {
 				"types": "./dist/*.d.ts",
@@ -40,9 +50,11 @@
 		"tag": "next"
 	},
 	"peerDependencies": {
+		"@hocuspocus/provider": "^4.1.0",
 		"@puckeditor/core": "^0.21.2",
 		"react": ">=19.0.0",
-		"react-dom": ">=19.0.0"
+		"react-dom": ">=19.0.0",
+		"y-websocket": "^3.0.0"
 	},
 	"peerDependenciesMeta": {
 		"react": {
@@ -53,6 +65,12 @@
 		},
 		"@puckeditor/core": {
 			"optional": false
+		},
+		"@hocuspocus/provider": {
+			"optional": true
+		},
+		"y-websocket": {
+			"optional": true
 		}
 	},
 	"dependencies": {
@@ -83,6 +101,7 @@
 		"@anvilkit/biome-config": "workspace:*",
 		"@anvilkit/typescript-config": "workspace:*",
 		"@anvilkit/vitest-config": "workspace:*",
+		"@hocuspocus/provider": "^4.1.0",
 		"@puckeditor/core": "^0.21.2",
 		"@rslib/core": "^0.22.0",
 		"@types/node": "^25.9.1",

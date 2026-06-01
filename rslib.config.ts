@@ -49,6 +49,7 @@ export default defineConfig({
 			"y-protocols",
 			"y-protocols/awareness",
 			"y-websocket",
+			"@hocuspocus/provider",
 		],
 	},
 });

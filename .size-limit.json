@@ -17,5 +17,18 @@
 			"y-protocols/awareness",
 			"y-websocket"
 		]
+	},
+	{
+		"name": "@anvilkit/plugin-collab-yjs/transport",
+		"path": "dist/transport.js",
+		"limit": "4 KB",
+		"gzip": true,
+		"ignore": [
+			"yjs",
+			"y-protocols",
+			"y-protocols/awareness",
+			"y-websocket",
+			"@hocuspocus/provider"
+		]
 	}
 ]
