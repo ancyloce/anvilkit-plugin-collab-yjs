@@ -30,6 +30,22 @@ import { validatePeerInfo } from "./presence-schema.js";
 import { createSnapshots } from "./snapshots.js";
 
 /**
+ * Y4 — `Y.Transaction.changed` is keyed by the internal
+ * `AbstractType<YEvent<…>>` shape, which Yjs's public types do not unify with a
+ * concrete `Y.Map`. The one unavoidable cast lives here so a future Yjs release
+ * that fixes the upstream typings has a single site to delete, rather than an
+ * `as unknown as` buried in the observer hot path.
+ */
+function transactionTouchedType(
+	transaction: Y.Transaction,
+	type: Y.Map<unknown>,
+): boolean {
+	return transaction.changed.has(
+		type as unknown as Y.AbstractType<Y.YEvent<Y.AbstractType<unknown>>>,
+	);
+}
+
+/**
  * Build a SnapshotAdapter v2 backed by a shared Y.Doc.
  *
  * Encoding is intentionally simple for the alpha cycle: the latest
@@ -256,14 +272,7 @@ export function createYjsAdapter(
 		// deep observer already handled (and will emit) this update —
 		// skip to avoid a double dispatch. Order-independent: we test
 		// the transaction's changed-type set, not observer fire order.
-		if (
-			treeRoot &&
-			transaction.changed.has(
-				treeRoot as unknown as Y.AbstractType<
-					Y.YEvent<Y.AbstractType<unknown>>
-				>,
-			)
-		) {
+		if (treeRoot && transactionTouchedType(transaction, treeRoot)) {
 			return;
 		}
 		const savedAt = snapshots.getLastLocalSavedAt();

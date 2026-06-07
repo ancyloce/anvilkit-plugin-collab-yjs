@@ -712,6 +712,14 @@ function parseNodeOwn(
 	const propsMap = getPropsMap(map);
 	const props: Record<string, unknown> = {};
 	if (propsMap !== undefined) {
+		// Y3 — TRUST BOUNDARY: prop values are JSON-parsed from peer-authored
+		// awareness/doc state. The tree walk is bounded for depth/cycles/node
+		// count, but a single prop VALUE's `JSON.parse` is not depth/size-bounded
+		// — by design, because peers are trusted (same room, same auth). An open
+		// multi-tenant deployment that admits untrusted peers must validate or
+		// size-bound prop payloads UPSTREAM (e.g. in `validateRemoteIR`) before
+		// they reach this reader; do not rely on this parse to defend the main
+		// thread against a pathological value.
 		for (const [key, raw] of propsMap.entries()) {
 			if (typeof raw !== "string") continue;
 			try {

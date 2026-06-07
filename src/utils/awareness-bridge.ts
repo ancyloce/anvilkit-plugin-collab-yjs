@@ -42,7 +42,14 @@ export function createAwarenessBridge(
 	rateLimit?: AwarenessRateLimitOptions,
 ): AwarenessBridge {
 	const churnHandler = () => {
-		metrics.incChurn();
+		// Y8 — isolate like the peer-change handler below: a throw here would
+		// otherwise bubble out of the awareness `change` emit and poison every
+		// sibling listener on the same event.
+		try {
+			metrics.incChurn();
+		} catch {
+			// metrics never throws in practice; stay defensive for parity.
+		}
 	};
 	awareness.on("change", churnHandler);
 
