@@ -11,7 +11,12 @@ import { createFakePageIR } from "@anvilkit/core/testing";
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import { describe, expect, it } from "vitest";
 
-import { decodeIR, encodeIR, hashIR, hashNodeContent } from "../utils/encode.js";
+import {
+	decodeIR,
+	encodeIR,
+	hashIR,
+	hashNodeContent,
+} from "../utils/encode.js";
 
 describe("encodeIR", () => {
 	it("round-trips a PageIR losslessly", () => {
@@ -86,6 +91,39 @@ describe("decodeIR", () => {
 
 	it("propagates SyntaxError for non-JSON input", () => {
 		expect(() => decodeIR("{not-json")).toThrow();
+	});
+
+	it("rejects a payload whose root node is missing or malformed (Y2)", () => {
+		expect(() => decodeIR(JSON.stringify({ version: "1" }))).toThrow(/root/);
+		expect(() => decodeIR(JSON.stringify({ version: "1", root: {} }))).toThrow(
+			/root/,
+		);
+		expect(() =>
+			decodeIR(JSON.stringify({ version: "1", root: { id: "r" } })),
+		).toThrow(/root/);
+		expect(() =>
+			decodeIR(JSON.stringify({ version: "1", root: { id: "r", type: 5 } })),
+		).toThrow(/root/);
+	});
+
+	it("rejects malformed assets / metadata containers (Y2)", () => {
+		const root = { id: "r", type: "__root__", props: {} };
+		expect(() =>
+			decodeIR(JSON.stringify({ version: "1", root, assets: {} })),
+		).toThrow(/assets/);
+		expect(() =>
+			decodeIR(JSON.stringify({ version: "1", root, metadata: [] })),
+		).toThrow(/metadata/);
+	});
+
+	it("accepts a minimal valid PageIR (root id+type; optional containers omitted)", () => {
+		const ir = decodeIR(
+			JSON.stringify({
+				version: "1",
+				root: { id: "r", type: "__root__", props: {} },
+			}),
+		);
+		expect(ir.root.id).toBe("r");
 	});
 });
 

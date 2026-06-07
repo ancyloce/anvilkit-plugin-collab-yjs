@@ -20,6 +20,32 @@ export function decodeIR(raw: string): PageIR {
 			"plugin-collab-yjs: decoded payload is not a valid PageIR (missing version=1)",
 		);
 	}
+	// Y2 — validate the structural backbone consumers dereference (the root
+	// node), not just the version tag, so a corrupt legacy blob fails fast at
+	// decode instead of throwing deep in projection. The IR comes from the
+	// adapter's own persistence (trusted), so this is robustness, not a security
+	// boundary; `assets`/`metadata` are checked only when present so older blobs
+	// that omit an optional field still decode.
+	const root = parsed.root;
+	if (
+		!isObject(root) ||
+		typeof root.id !== "string" ||
+		typeof root.type !== "string"
+	) {
+		throw new Error(
+			"plugin-collab-yjs: decoded payload is not a valid PageIR (missing or malformed root node)",
+		);
+	}
+	if (parsed.assets !== undefined && !Array.isArray(parsed.assets)) {
+		throw new Error(
+			"plugin-collab-yjs: decoded payload is not a valid PageIR (assets must be an array)",
+		);
+	}
+	if (parsed.metadata !== undefined && !isObject(parsed.metadata)) {
+		throw new Error(
+			"plugin-collab-yjs: decoded payload is not a valid PageIR (metadata must be an object)",
+		);
+	}
 	return parsed as unknown as PageIR;
 }
 
