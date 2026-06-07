@@ -24,6 +24,7 @@ let globalSnapshotSeq = 0;
 
 const LATENCY_WINDOW_SIZE = 200;
 const CHURN_WINDOW_MS = 5 * 60_000;
+const INBOUND_COALESCED_WINDOW_MS = 5 * 60_000;
 const TIMING_WINDOW_SIZE = 200;
 
 export interface MetricsState {
@@ -66,7 +67,11 @@ export function createMetricsState(): MetricsState {
 	let degraded = false;
 	const degradedReasons = new Set<DegradedReason>();
 	let snapshotCounter = 0;
-	let inboundCoalesced = 0;
+	// Y6 — sliding window of recent inbound-coalesce events (mirrors
+	// `churnTimestamps`). The old monotonic `inboundCoalesced` total went
+	// meaningless on long sessions, the same anti-pattern already retired for
+	// awareness churn (L1).
+	const inboundCoalescedEvents: { ts: number; n: number }[] = [];
 	const latencyWindow: number[] = [];
 	const churnTimestamps: number[] = [];
 	const timingWindows = new Map<TimingKind, number[]>();
@@ -95,6 +100,16 @@ export function createMetricsState(): MetricsState {
 		const cutoff = now - CHURN_WINDOW_MS;
 		while (churnTimestamps.length > 0 && churnTimestamps[0]! < cutoff) {
 			churnTimestamps.shift();
+		}
+	}
+
+	function trimInboundWindow(now: number): void {
+		const cutoff = now - INBOUND_COALESCED_WINDOW_MS;
+		while (
+			inboundCoalescedEvents.length > 0 &&
+			inboundCoalescedEvents[0]!.ts < cutoff
+		) {
+			inboundCoalescedEvents.shift();
 		}
 	}
 
@@ -127,7 +142,10 @@ export function createMetricsState(): MetricsState {
 			if (value && reason !== undefined) degradedReasons.add(reason);
 		},
 		incInboundCoalesced(n = 1): void {
-			if (Number.isFinite(n) && n > 0) inboundCoalesced += n;
+			if (!Number.isFinite(n) || n <= 0) return;
+			const now = Date.now();
+			inboundCoalescedEvents.push({ ts: now, n });
+			trimInboundWindow(now);
 		},
 		recordTiming,
 		createSnapshotId(): string {
@@ -140,8 +158,12 @@ export function createMetricsState(): MetricsState {
 			return `snap-${Date.now().toString(36)}-${seq.toString(36).padStart(10, "0")}-${String(counter).padStart(6, "0")}-${Math.random().toString(36).slice(2, 8)}`;
 		},
 		snapshot(): MetricsSnapshot {
-			trimChurnWindow(Date.now());
+			const now = Date.now();
+			trimChurnWindow(now);
+			trimInboundWindow(now);
 			const sorted = [...latencyWindow].sort((a, b) => a - b);
+			let inboundCoalesced = 0;
+			for (const event of inboundCoalescedEvents) inboundCoalesced += event.n;
 			return {
 				saveCount,
 				transportWrites: saveCount,

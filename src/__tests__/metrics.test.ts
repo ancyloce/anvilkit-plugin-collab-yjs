@@ -323,4 +323,18 @@ describe("createMetricsState — A2 degradedReasons", () => {
 			"max-nodes",
 		]);
 	});
+
+	// Y6 — inboundCoalesced is now a sliding window (mirrors awarenessChurn),
+	// not a monotonic total. Recent events still sum within the window.
+	it("sums inbound-coalesced events within the recent window (Y6)", () => {
+		const m = createMetricsState();
+		expect(m.snapshot().inboundCoalesced).toBe(0);
+		m.incInboundCoalesced();
+		m.incInboundCoalesced(3);
+		expect(m.snapshot().inboundCoalesced).toBe(4);
+		// Non-positive / non-finite increments are ignored.
+		m.incInboundCoalesced(0);
+		m.incInboundCoalesced(Number.NaN);
+		expect(m.snapshot().inboundCoalesced).toBe(4);
+	});
 });
