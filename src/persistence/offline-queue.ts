@@ -12,6 +12,17 @@ import type { StorageBackend } from "./storage-backend.js";
  */
 const DEFAULT_COMPACT_EVERY = 200;
 
+/**
+ * Y1 — cap the in-memory pre-ready buffer. Writes issued before the backend
+ * `ready` promise resolves are buffered; a stuck/slow backend open (quota full,
+ * permission denied, a hung IndexedDB `open`) under keystroke-rate edits would
+ * otherwise grow this without bound. On overflow we collapse the backlog into a
+ * single equivalent update via `Y.mergeUpdatesV2` — lossless, the same merge
+ * the durable compaction path uses — so memory stays bounded with no dropped
+ * edits even if `ready` never resolves.
+ */
+const MAX_PENDING_APPENDS = 1024;
+
 export interface OfflineQueue {
 	append(update: Uint8Array): void;
 	drain(): Promise<readonly Uint8Array[]>;
@@ -50,6 +61,12 @@ export interface OfflineQueueOptions {
 	 * to 200. Set `Infinity` to disable compaction.
 	 */
 	readonly compactEvery?: number;
+	/**
+	 * Y1 — cap the in-memory pre-`ready` buffer. On overflow the backlog is
+	 * losslessly merged into one update; defaults to {@link MAX_PENDING_APPENDS}.
+	 * Primarily a test seam — production never sets it.
+	 */
+	readonly maxPendingAppends?: number;
 }
 
 /**
@@ -68,6 +85,10 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 	const pendingAppends: Uint8Array[] = [];
 	let ready = input.ready === undefined;
 	const compactEvery = input.compactEvery ?? DEFAULT_COMPACT_EVERY;
+	const maxPendingAppends = Math.max(
+		1,
+		input.maxPendingAppends ?? MAX_PENDING_APPENDS,
+	);
 	let appendsSinceCompaction = 0;
 	let compacting = false;
 	let destroyed = false;
@@ -107,6 +128,20 @@ export function createOfflineQueue(input: OfflineQueueOptions): OfflineQueue {
 		append(update: Uint8Array): void {
 			if (!ready) {
 				pendingAppends.push(update);
+				// Y1 — bound the buffer if the backend never becomes ready: merge
+				// the backlog into one equivalent update instead of growing forever.
+				if (pendingAppends.length > maxPendingAppends) {
+					try {
+						const merged = Y.mergeUpdatesV2(pendingAppends.map((u) => u));
+						pendingAppends.length = 0;
+						pendingAppends.push(merged);
+					} catch {
+						// Merge should never fail on real updateV2 payloads, but this
+						// runs in the Y.Doc observer chain and must never throw — bound
+						// memory by dropping the oldest half as a fallback.
+						pendingAppends.splice(0, pendingAppends.length >> 1);
+					}
+				}
 				return;
 			}
 			// Fire-and-forget: the backend swallows quota errors and
