@@ -10,7 +10,7 @@ A first-party Anvilkit Studio plugin that proves the `SnapshotAdapter` v2 contra
 pnpm add @anvilkit/plugin-collab-yjs yjs y-protocols react react-dom @puckeditor/core
 ```
 
-`yjs` and `y-protocols` are direct runtime dependencies. `react`, `react-dom`, and `@puckeditor/core` are non-optional peers — the plugin runs inside the Studio shell. For a transport, install `y-websocket` (demos) or wire your own provider (Hocuspocus, custom WebRTC, etc.).
+`yjs` and `y-protocols` are direct runtime dependencies. `react`, `react-dom`, and `@puckeditor/core` are **non-optional** peers even though this is the "data-only" layer: the package exports React hooks (e.g. `usePuckSelection`) and its plugin factory runs inside the React-based Studio shell, so React is genuinely required — it is not split into a React-free entry. For a transport, install `y-websocket` (demos) or wire your own provider (Hocuspocus, custom WebRTC, etc.).
 
 ## Quickstart
 
