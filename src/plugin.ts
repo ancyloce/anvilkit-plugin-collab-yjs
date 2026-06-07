@@ -530,12 +530,18 @@ function dispatchRemoteIR(
 	// from its existing indexes and unions it with `changedIds`.
 	// `undefined` (structural / hydration / legacy) keeps the full
 	// recursive shield exactly as before.
-	const shielded = applyLocalShield(
-		validated,
-		localShadow,
-		nowMs(),
-		changedIds,
-	);
+	// Y5 — the shield triple-stringifies prop values; an unserializable prop
+	// (a circular ref / function smuggled past validation) would otherwise
+	// throw and crash the entire inbound dispatch. Fall back to the un-shielded
+	// remote IR: the local-edit preservation is skipped for this one dispatch,
+	// but the remote update still applies and the editor stays live (a full
+	// round-trip, the correctness backstop).
+	let shielded = validated;
+	try {
+		shielded = applyLocalShield(validated, localShadow, nowMs(), changedIds);
+	} catch {
+		shielded = validated;
+	}
 	localShadow.lastDispatched = validated;
 	// Reading current data via `ctx.getData()` instead of
 	// `getPuckApi().appState` keeps this path off Puck's API when
