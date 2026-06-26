@@ -83,6 +83,17 @@ export function sanitizeDisplayName(value: string): string {
 	return stripped.slice(0, MAX_DISPLAY_NAME_LENGTH);
 }
 
+/**
+ * Validate and sanitize an untrusted value into a {@link PeerInfo}.
+ *
+ * Requires a non-empty string `id`. `displayName`, when present, must be
+ * a string and is sanitized via {@link sanitizeDisplayName}; `color`,
+ * when present, must be a valid color string. Any other shape returns
+ * `null` so the caller can reject the peer.
+ *
+ * @param value - Untrusted peer payload (e.g. from awareness state).
+ * @returns A sanitized `PeerInfo`, or `null` if the value is invalid.
+ */
 export function validatePeerInfo(value: unknown): PeerInfo | null {
 	if (!isObject(value)) return null;
 	if (typeof value.id !== "string" || value.id.length === 0) return null;
@@ -101,12 +112,33 @@ export function validatePeerInfo(value: unknown): PeerInfo | null {
 	return sanitized as unknown as PeerInfo;
 }
 
+/**
+ * Validate an untrusted value into a {@link PresenceCursor}.
+ *
+ * Requires finite numeric `x` and `y` coordinates; any other shape (or a
+ * `NaN`/`Infinity` coordinate) returns `null`.
+ *
+ * @param value - Untrusted cursor payload.
+ * @returns The `PresenceCursor`, or `null` if invalid.
+ */
 export function validatePresenceCursor(value: unknown): PresenceCursor | null {
 	if (!isObject(value)) return null;
 	if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
 	return value as unknown as PresenceCursor;
 }
 
+/**
+ * Strictly validate an untrusted value into a {@link PresenceSelection}.
+ *
+ * Requires `nodeIds` to be an array in which EVERY entry is a string; the
+ * whole selection is rejected (returns `null`) if `nodeIds` is absent,
+ * not an array, or contains any non-string entry. Contrast with
+ * {@link sanitizePresenceSelection}, which drops bad ids and truncates
+ * instead of rejecting the entire payload.
+ *
+ * @param value - Untrusted selection payload.
+ * @returns The `PresenceSelection`, or `null` if invalid.
+ */
 export function validatePresenceSelection(
 	value: unknown,
 ): PresenceSelection | null {

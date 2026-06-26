@@ -13,6 +13,22 @@ export function encodeIR(ir: PageIR): string {
 	return JSON.stringify(ir, (_key, value) => sortKeysIfObject(value));
 }
 
+/**
+ * Parse a JSON string produced by {@link encodeIR} back into a `PageIR`.
+ *
+ * Validates the structural backbone consumers dereference — `version`
+ * must equal `"1"` and `root` must be an object with string `id`/`type`
+ * — plus the optional `assets` (array) and `metadata` (object) fields
+ * when present, so a corrupt or legacy blob fails fast at decode rather
+ * than deep in projection. The IR comes from the adapter's own trusted
+ * persistence, so this is robustness, not a security boundary.
+ *
+ * @param raw - JSON string to decode.
+ * @returns The parsed `PageIR`.
+ * @throws Error when the payload is missing `version=1`, has a missing or
+ *   malformed root node, or carries a non-array `assets` / non-object
+ *   `metadata`.
+ */
 export function decodeIR(raw: string): PageIR {
 	const parsed = JSON.parse(raw);
 	if (!isObject(parsed) || parsed.version !== "1") {

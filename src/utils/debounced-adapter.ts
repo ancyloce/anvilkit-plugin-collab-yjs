@@ -68,6 +68,24 @@ export class DebouncedAdapterDestroyedError extends Error {
 	}
 }
 
+/**
+ * Wrap a `SnapshotAdapter` so that bursts of `save()` calls within the
+ * configured quiet window (`options.ms`, default 150 ms) coalesce into a
+ * single underlying write. The latest IR wins, and every caller that
+ * issued a save during the window resolves (or rejects) with the result
+ * of that single flush. `list`, `load`, `delete`, `subscribe`, and
+ * `presence` pass through to the wrapped adapter unchanged.
+ *
+ * The returned adapter overlays a coalescing ratio onto the upstream
+ * `metrics()` snapshot (when present) and exposes a `destroy()` that
+ * cancels the pending flush timer, rejects any in-flight `save()` with
+ * {@link DebouncedAdapterDestroyedError}, and forwards teardown to the
+ * upstream adapter. Hosts MUST call `destroy()` on unmount.
+ *
+ * @param adapter - Upstream snapshot adapter whose writes are debounced.
+ * @param options - Quiet-window (`ms`) and scheduler-injection overrides.
+ * @returns A `SnapshotAdapterWithMetrics` that debounces `save()`.
+ */
 export function createDebouncedAdapter(
 	adapter: SnapshotAdapterWithMetrics,
 	options: CreateDebouncedAdapterOptions = {},
