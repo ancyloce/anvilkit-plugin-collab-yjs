@@ -4,6 +4,46 @@
 
 A first-party Anvilkit Studio plugin that proves the `SnapshotAdapter` v2 contract can host live CRDT state alongside Puck without forking Core or Puck. Built on [Yjs](https://github.com/yjs/yjs) and [`y-protocols/awareness`](https://github.com/yjs/y-protocols), it ships the data layer only — pair it with `@anvilkit/collab-ui` for the React presentation layer or compose your own UI on top of the public hooks.
 
+## Scope / shared-type support
+
+**This is a PageIR-only Yjs adapter, not a general-purpose Yjs binding.** It mirrors a single domain model — Puck's `PageIR` — into a flat-addressed `Y.Map` tree:
+
+- one `Y.Map` per node (keyed `node:<id>`), holding the node's scalar fields;
+- a per-parent `Y.Array<string>` `childIds` list for ordered structure;
+- **JSON-encoded prop values** — each prop is stored as a `JSON.stringify`'d string inside the per-node `Y.Map`, so props are opaque to the CRDT and merge per-key (LWW), not character-by-character.
+
+The **only** Yjs shared types it binds are therefore `Y.Map` and `Y.Array`. Native `Y.Text`, `Y.XmlElement`, `Y.XmlFragment`, and **subdocuments** are **out of scope** — there is no public binding that projects collaborative edits inside those types into the Puck editor. (In particular, rich-text props do not get character-level CRDT merge; a prop value is replaced wholesale on each save.)
+
+This contract is exported and machine-checkable, so hosts can branch on it instead of reading prose:
+
+```ts
+import {
+  SHARED_TYPE_SUPPORT,
+  isManagedSharedType,
+  getHostSharedRoot,
+} from "@anvilkit/plugin-collab-yjs";
+
+SHARED_TYPE_SUPPORT.model; // "page-ir"
+SHARED_TYPE_SUPPORT.managed; // ["Y.Map", "Y.Array"]
+SHARED_TYPE_SUPPORT.unsupported; // ["Y.Text", "Y.XmlElement", "Y.XmlFragment", "Y.Doc"]
+SHARED_TYPE_SUPPORT.propEncoding; // "json-string"
+
+isManagedSharedType("Y.Array"); // true
+isManagedSharedType("Y.Text"); // false
+```
+
+**Escape hatch.** If you genuinely need a native shared type alongside the page (a `Y.Text` comment thread, a `Y.XmlFragment` field, a subdoc), `getHostSharedRoot(doc, namespace)` returns a top-level `Y.Map` on the **same** `Y.Doc`, namespaced under `` `${mapName}:host:${namespace}` `` so it can never collide with the two roots the adapter manages (the legacy blob root `mapName` and the native tree root `` `${mapName}:tree` ``). The adapter never reads or writes that map — its content does not appear in the projected `PageIR`, snapshots, undo, or conflict detection — but because it lives on the shared doc, Yjs still replicates it (and the opt-in persistence/transport still carries it). Interpreting and rendering it is entirely the host's responsibility.
+
+```ts
+import { getHostSharedRoot } from "@anvilkit/plugin-collab-yjs";
+import * as Y from "yjs";
+
+// Host-owned, adapter-ignored — safe to attach any native shared type.
+const comments = getHostSharedRoot(doc, "comments");
+const thread = new Y.Text();
+comments.set("hero-1", thread);
+```
+
 ## Installation
 
 ```bash
@@ -322,6 +362,30 @@ The relay listens on **port 21234 by default** (1234 and 11234 are avoided becau
 
 For production deployments — auth, durable Postgres persistence, and Redis-backed horizontal scale-out via [Hocuspocus](https://tiptap.dev/hocuspocus) — follow the recipe at [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
 
+### Production deployment & authorization
+
+Authorization is **two layers**, and the plugin treats both as the source of truth — neither replaces the other:
+
+1. **Relay-level authentication (who may connect).** The websocket upgrade itself is gated by the relay. With [Hocuspocus](https://tiptap.dev/hocuspocus) this is the `onAuthenticate({ token })` hook — throw to reject the connection (it closes the socket). Tokens are forwarded from the client via the provider's `token` option (or `createManagedTransport({ token })`). See [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md) for an authenticated `server.mjs` plus the matching client wiring.
+
+2. **Application-level authorization (who may edit what).** Per-node edit rights are enforced **client-side and symmetrically** through the [`policy.canEdit(node, peer)`](#policy--validation-hooks) hook — outbound before every `save()`, inbound after `validateRemoteIR`. A rejection drops the change and fires `onPolicyViolation`. Mirror the same checks in the relay's `onChange` hook (server-side defense-in-depth) so a peer that bypasses the client cannot smuggle an unauthorized update past the policy.
+
+**A relay auth failure is a first-class, distinguishable connection error.** When the managed transport's Hocuspocus provider emits `authenticationFailed`, it surfaces as a typed `ConnectionStatus`:
+
+```ts
+import type { ConnectionStatus } from "@anvilkit/plugin-collab-yjs";
+
+function onStatus(status: ConnectionStatus) {
+  if (status.kind === "error" && status.reason === "auth") {
+    // Non-recoverable without new credentials (status.recoverable === false).
+    // Prompt re-authentication rather than a blind retry.
+    promptReauth();
+  }
+}
+```
+
+The `error` variant carries an optional `reason: "auth" | "transport"` discriminator (absent ⇒ `"transport"`). Auth failures (`reason: "auth"`) are emitted with `recoverable: false`, so a host can prompt for fresh credentials instead of showing a transient reconnect indicator; every other connection-level fault stays `reason: "transport"`. Hosts that build a bespoke `connectionSource` against a raw `HocuspocusProvider` should map its `authenticationFailed` event to `{ kind: "error", reason: "auth", recoverable: false }` to get the same UX — see the client-wiring example in [`docs/hocuspocus-deployment.md`](./docs/hocuspocus-deployment.md).
+
 ### Performance characteristics
 
 - **Remote edits — incremental.** A remote prop edit re-reads only the touched nodes. A reorder/insert/delete emits a structured relink delta so the live-IR cache relinks only the affected parents + added nodes, reusing every untouched node's already-parsed props. A genuine whole-document change still falls back to a full guarded rebuild — the correctness backstop.
@@ -334,7 +398,41 @@ Budget guidance: pages up to a few thousand nodes with the default `maxSnapshots
 
 Both `persistence.indexedDb` and `persistence.broadcastChannel` default to `false`. When enabled, each backend feature-detects at construction time and degrades silently if its API is unavailable (SSR, older browsers, certain test runners). Use `persistence.onFault` to learn about quota or schema faults — the adapter never throws out of persistence into the `Y.Doc` observer chain.
 
-Snapshot-level persistence (full state dump for fast tab bootstrap) and encryption at rest for the IDB queue are deferred. Cross-origin / iframe persistence is explicitly out of scope — `BroadcastChannel` is same-origin and that is the correct boundary for an editor.
+### Server-grade snapshot persistence is pluggable
+
+Snapshot-level persistence (a durable, full-state dump that outlives the bounded in-`Y.Doc` `maxSnapshots` window — for fast tab bootstrap or a server-side history store) is an **optional injection point** rather than a built-in backend. Pass `snapshotPersistence: { adapter }` to `createYjsAdapter`, where `adapter` implements the `SnapshotPersistenceAdapter` interface:
+
+```ts
+import {
+  createYjsAdapter,
+  type SnapshotPersistenceAdapter,
+} from "@anvilkit/plugin-collab-yjs";
+
+const backend: SnapshotPersistenceAdapter = {
+  saveSnapshot: (meta, payload) => db.put(meta.id, { meta, payload }),
+  loadSnapshot: (id) => db.get(id).then((r) => r?.payload),
+  listSnapshots: () => db.all(),
+  deleteSnapshot: (id) => db.delete(id),
+};
+
+const adapter = createYjsAdapter({
+  doc,
+  snapshotPersistence: {
+    adapter: backend,
+    // Encryption-at-rest seam — supply a real cipher pair. `decode(encode(x)) === x`.
+    encode: (payload) => cipher.encrypt(payload),
+    decode: (payload) => cipher.decrypt(payload),
+    onFault: (op, err) => telemetry.warn("snapshot-persistence", { op, err }),
+  },
+});
+
+// Hydrate the durable, full-state snapshot independently of the bounded in-Y.Doc window:
+const ir = await adapter.loadPersistedSnapshot(id);
+```
+
+The in-`Y.Doc` snapshot store remains the **source of truth and the default** — supplying `snapshotPersistence` only *mirrors* each `save()` (a self-contained payload + `SnapshotMeta`) and each explicit `delete()` to the backend. Mirroring is best-effort: a backend throw/reject surfaces through `onFault` and never blocks or rejects the in-`Y.Doc` write. Retention evictions (`maxSnapshots`) are deliberately **not** mirrored, so the durable store can retain history the CRDT has pruned. The `encode`/`decode` pair is the documented **encryption-at-rest** seam (the adapter ships no crypto of its own).
+
+Cross-origin / iframe persistence is explicitly out of scope — `BroadcastChannel` is same-origin and that is the correct boundary for an editor.
 
 ### See also
 
