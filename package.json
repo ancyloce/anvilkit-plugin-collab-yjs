@@ -26,16 +26,6 @@
 				"types": "./dist/transport.d.cts",
 				"default": "./dist/transport.cjs"
 			}
-		},
-		"./*": {
-			"import": {
-				"types": "./dist/*.d.ts",
-				"default": "./dist/*.js"
-			},
-			"require": {
-				"types": "./dist/*.d.cts",
-				"default": "./dist/*.cjs"
-			}
 		}
 	},
 	"files": [
