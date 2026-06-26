@@ -1,12 +1,15 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type {
+	MaybePromise,
 	PeerInfo,
 	SnapshotAdapter,
+	SnapshotMeta,
 	Unsubscribe,
 } from "@anvilkit/plugin-version-history";
 import type { Config } from "@puckeditor/core";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc as YDoc } from "yjs";
+import type { RichSnapshotAdapterPresence } from "../utils/presence-schema.js";
 
 /**
  * Pluggable scheduler for the inbound coalescing buffer (H1). Defined here
@@ -115,6 +118,160 @@ export interface CreateYjsAdapterOptions {
 	 * for the individual toggles.
 	 */
 	readonly persistence?: PersistenceOptions;
+	/**
+	 * §4.2.2 — opt-in server-grade snapshot persistence. When provided,
+	 * every `save()` mirrors the snapshot's {@link SnapshotMeta} and a
+	 * self-contained encoded payload to the supplied
+	 * {@link SnapshotPersistenceAdapter}, and `delete()` removes it. The
+	 * in-`Y.Doc` snapshot store remains the source of truth and the
+	 * default — this is an OPTIONAL durable/back-end sink for full-state
+	 * snapshot dumps that outlive the bounded {@link maxSnapshots} window.
+	 *
+	 * Mirroring is best-effort and never blocks or rejects the in-`Y.Doc`
+	 * write; faults surface via {@link SnapshotPersistenceOptions.onFault}.
+	 * Supply {@link SnapshotPersistenceOptions.encode}/`decode` to wrap the
+	 * payload (encryption-at-rest seam). Omit to keep the pre-§4.2.2
+	 * behavior — no backend calls are made.
+	 */
+	readonly snapshotPersistence?: SnapshotPersistenceOptions;
+	/**
+	 * Opt-in local undo/redo (§4.1.1). When provided, the adapter wraps
+	 * a `Y.UndoManager` over the shared type that backs the live
+	 * `PageIR` — the native `:tree` `Y.Map` in the default native-tree
+	 * mode, or the legacy whole-document `Y.Map` when `useNativeTree`
+	 * is `false`. The adapter then exposes {@link UndoController}
+	 * (`undo` / `redo` / `canUndo` / `canRedo` / `clearUndo` /
+	 * `onUndoStackChange`). Omit to keep the pre-undo behavior: the
+	 * controller methods are still present but inert (`canUndo()`
+	 * returns `false`, `undo()` is a no-op).
+	 *
+	 * Only the local peer's own edits are tracked (see
+	 * {@link UndoOptions.trackedOrigins}); remote peers' changes are
+	 * never on the local undo stack, so `undo()` can never roll back
+	 * another collaborator's work.
+	 */
+	readonly undo?: UndoOptions;
+	/**
+	 * Y3/§4.1.3 — bounds applied at the prop-decode trust boundary when
+	 * reconstructing `PageIR` from the shared native tree. Prop VALUES
+	 * are peer-authored JSON strings `JSON.parse`d on the main thread;
+	 * an open / multi-tenant room can admit a peer whose single prop is
+	 * pathologically large, deeply nested, or an over-long array. A prop
+	 * value that exceeds any bound is DROPPED from the decoded node (it
+	 * never reaches Puck) and the adapter records the matching
+	 * {@link DegradedReason} so the regression surfaces in metrics
+	 * instead of silently corrupting or stalling the main thread. Omit
+	 * to use the permissive defaults (see {@link PropGuardOptions}),
+	 * which admit ordinary PageIR untouched.
+	 */
+	readonly propGuards?: PropGuardOptions;
+	/**
+	 * §4.2.3 — optional semantic merge-strategy hook for same-node,
+	 * same-FIELD prop conflicts. When a remote update overlaps a node the
+	 * local peer is editing, the adapter computes the conflicting prop
+	 * fields (with local vs remote values), fires `onConflict` with that
+	 * richer {@link ConflictEvent}, then consults this hook. Returning
+	 * `"local"` re-asserts the local values, `{ fields }` applies a precise
+	 * field-level merge, and `"remote"` / `undefined` keeps the default
+	 * last-write-wins value. A non-`"remote"` resolution is written back
+	 * into the shared `Y.Doc` and replicated to every peer. Omit to keep
+	 * pure last-write-wins (the existing behavior — conflict events still
+	 * fire). See {@link ResolveConflict}.
+	 */
+	readonly resolveConflict?: ResolveConflict;
+}
+
+/**
+ * Y3/§4.1.3 — per-prop decode bounds. All four are independent ceilings
+ * checked while decoding a single prop value; the first one exceeded
+ * drops that prop and records its reason. Defaults are deliberately
+ * generous so legitimate PageIR (rich-text, nested layout props, item
+ * lists) is never clamped.
+ */
+export interface PropGuardOptions {
+	/**
+	 * Maximum encoded length (string length of the JSON-encoded value)
+	 * of a single prop, checked BEFORE `JSON.parse` so a multi-megabyte
+	 * payload never reaches the parser. Default: `262144` (256 KiB).
+	 */
+	readonly maxBytes?: number;
+	/**
+	 * Maximum nested object/array depth inside one decoded prop value.
+	 * Default: `64`.
+	 */
+	readonly maxDepth?: number;
+	/**
+	 * Maximum length of any single array inside one decoded prop value.
+	 * Default: `100000`.
+	 */
+	readonly maxArrayLength?: number;
+	/**
+	 * Maximum total decoded values (every object, array, and scalar) in
+	 * one prop value — a ceiling on overall payload size independent of
+	 * shape. Default: `1000000`.
+	 */
+	readonly maxNodes?: number;
+}
+
+/**
+ * Local undo/redo configuration (§4.1.1). Maps the report's
+ * `{ scopes, trackedOrigins, captureTimeout }` shape onto this adapter:
+ * the *scope* is fixed (the adapter owns it — the native `:tree` map or
+ * the legacy whole-document map), so only the origin filter and the
+ * capture window are tunable here.
+ */
+export interface UndoOptions {
+	/**
+	 * Extra transaction origins to track in addition to the adapter's
+	 * local peer. The adapter writes every local `save()` with the local
+	 * `PeerInfo` object as the Yjs transaction origin and always tracks
+	 * that origin, so local edits are undoable out of the box and
+	 * remote-origin changes (a different peer, transport `applyUpdate`)
+	 * are deliberately excluded. Add entries here only if the host runs
+	 * its own `doc.transact(fn, origin)` writes it wants on the local
+	 * undo stack.
+	 */
+	readonly trackedOrigins?: Iterable<unknown>;
+	/**
+	 * Merge window (ms) within which successive tracked changes collapse
+	 * into a single undo step — forwarded verbatim to `Y.UndoManager`'s
+	 * `captureTimeout`. Defaults to Yjs's own `500`. Set `0` to make
+	 * every `save()` its own undo boundary.
+	 */
+	readonly captureTimeout?: number;
+}
+
+/**
+ * Local undo/redo surface exposed by {@link YjsSnapshotAdapter} when
+ * {@link CreateYjsAdapterOptions.undo} is provided. All methods are
+ * always present; when undo was not enabled they are inert
+ * (`canUndo`/`canRedo` return `false`, `undo`/`redo`/`clearUndo` are
+ * no-ops, `onUndoStackChange` never fires).
+ */
+export interface UndoController {
+	/** Undo the most recent locally-tracked change. No-op when nothing is tracked. */
+	readonly undo: () => void;
+	/** Redo the most recently undone change. No-op when the redo stack is empty. */
+	readonly redo: () => void;
+	/** `true` when there is at least one local change to undo. */
+	readonly canUndo: () => boolean;
+	/** `true` when there is at least one undone change to redo. */
+	readonly canRedo: () => boolean;
+	/**
+	 * Drop every tracked undo/redo step. Hosts call this when switching
+	 * the live document (e.g. loading a different page) so a later
+	 * `undo()` cannot bleed the previous document's edits into the new
+	 * one.
+	 */
+	readonly clearUndo: () => void;
+	/**
+	 * Subscribe to undo/redo stack mutations (item added on a tracked
+	 * local edit, item popped on undo/redo, stack cleared). The callback
+	 * takes no arguments — hosts re-read `canUndo()`/`canRedo()` to drive
+	 * toolbar enabled-state, typically via `useSyncExternalStore`.
+	 * Returns an unsubscribe.
+	 */
+	readonly onUndoStackChange: (callback: () => void) => Unsubscribe;
 }
 
 export interface AwarenessRateLimitOptions {
@@ -176,6 +333,104 @@ export interface PersistenceOptions {
 }
 
 /**
+ * §4.2.2 — pluggable backend storage for saved snapshots ("server-grade
+ * snapshot persistence"). The in-`Y.Doc` snapshot store is bounded by
+ * {@link CreateYjsAdapterOptions.maxSnapshots} and is the source of
+ * truth; this is an OPTIONAL durable sink an embedder wires to a real
+ * backend (Postgres, S3, a `fetch` endpoint, IndexedDB object store …)
+ * so full-state snapshots survive eviction and reloads.
+ *
+ * Every method may be synchronous or return a `Promise`. The adapter
+ * mirrors writes best-effort: a thrown/rejected call is reported through
+ * {@link SnapshotPersistenceOptions.onFault} and never propagates into
+ * the in-`Y.Doc` `save()`/`delete()` path.
+ *
+ * `payload` is an opaque string — the encoded snapshot payload after the
+ * optional {@link SnapshotPersistenceOptions.encode} transform. Treat it
+ * as a blob; do not parse it.
+ */
+export interface SnapshotPersistenceAdapter {
+	/**
+	 * Persist (or overwrite) the snapshot identified by `meta.id`. Called
+	 * once per `save()` with the snapshot metadata and the transformed,
+	 * self-contained payload blob.
+	 */
+	saveSnapshot(meta: SnapshotMeta, payload: string): MaybePromise<void>;
+	/**
+	 * Return the previously stored payload blob for `id`, or `undefined`
+	 * when this backend has no record of it. The adapter applies
+	 * {@link SnapshotPersistenceOptions.decode} before decoding it back to
+	 * a `PageIR`.
+	 */
+	loadSnapshot(id: string): MaybePromise<string | undefined>;
+	/** Enumerate the metadata of every snapshot this backend retains. */
+	listSnapshots(): MaybePromise<readonly SnapshotMeta[]>;
+	/** Remove the snapshot identified by `id`. Idempotent. */
+	deleteSnapshot(id: string): MaybePromise<void>;
+}
+
+/**
+ * §4.2.2 — configuration bag for {@link CreateYjsAdapterOptions.snapshotPersistence}.
+ * Bundles the {@link SnapshotPersistenceAdapter} with an optional
+ * reversible payload transform (the encryption-at-rest seam) and a fault
+ * sink.
+ */
+export interface SnapshotPersistenceOptions {
+	/** The backend storage implementation. */
+	readonly adapter: SnapshotPersistenceAdapter;
+	/**
+	 * Optional transform applied to the encoded payload string BEFORE it
+	 * is handed to {@link SnapshotPersistenceAdapter.saveSnapshot}. This is
+	 * the documented encryption-at-rest seam — supply a real cipher here
+	 * (the adapter ships no crypto). It is NOT applied to the in-`Y.Doc`
+	 * copy. If provided, a matching {@link decode} MUST be supplied such
+	 * that `decode(encode(x)) === x`, or hydration via
+	 * {@link YjsSnapshotAdapter.loadPersistedSnapshot} will fail.
+	 */
+	readonly encode?: (payload: string) => string;
+	/**
+	 * Inverse of {@link encode}, applied to the payload read back from
+	 * {@link SnapshotPersistenceAdapter.loadSnapshot} before it is decoded
+	 * into a `PageIR`. Omit when {@link encode} is omitted.
+	 */
+	readonly decode?: (payload: string) => string;
+	/**
+	 * Notified when a mirror operation (`saveSnapshot` / `deleteSnapshot`)
+	 * throws or rejects. Mirroring is best-effort and never blocks the
+	 * in-`Y.Doc` store, so this is the only signal of a backend fault.
+	 * The first argument names the failed operation.
+	 */
+	readonly onFault?: (operation: string, error: unknown) => void;
+}
+
+/**
+ * Why a transport connection entered the `error` state. Discriminates an
+ * authentication / authorization failure from every other connection-level
+ * fault so a host can react appropriately instead of treating an expired
+ * token the same as a dropped socket:
+ *
+ * - `"auth"` — the relay rejected the connection on authentication or
+ *   authorization grounds (e.g. Hocuspocus `onAuthenticate` threw, or a
+ *   policy hook refused the document). These are typically **not**
+ *   recoverable by retrying the same credentials — the host should prompt
+ *   for re-authentication / fresh credentials, so the accompanying
+ *   `recoverable` flag is `false`.
+ * - `"transport"` — any other connection-level failure (unreachable or
+ *   malformed URL, missing provider library, socket close/error). May or
+ *   may not be recoverable depending on the cause.
+ * - `"timeout"` — the transport stayed in `connecting`/`reconnecting`
+ *   past the managed transport's `connectTimeoutMs` without ever reaching
+ *   `synced` (§4.2.1). Recoverable: the provider may still connect later,
+ *   so a host should surface a "still connecting…" / "taking longer than
+ *   usual" affordance rather than a hard failure.
+ *
+ * Optional and treated as `"transport"` when absent, so a host that builds
+ * its own {@link ConnectionSource} and emits the legacy
+ * `{ kind: "error", message, recoverable }` shape stays valid.
+ */
+export type ConnectionErrorReason = "auth" | "transport" | "timeout";
+
+/**
  * Discriminated union describing the host transport's lifecycle as
  * observed by the adapter. The five variants give hosts a transport-
  * agnostic surface to render a unified sync indicator without reading
@@ -206,6 +461,15 @@ export type ConnectionStatus =
 			readonly kind: "error";
 			readonly message: string;
 			readonly recoverable: boolean;
+			/**
+			 * Why the connection errored. Lets a host distinguish an
+			 * authentication / authorization failure (`"auth"`, typically
+			 * non-recoverable without new credentials) from a generic
+			 * transport fault (`"transport"`). Absent is treated as
+			 * `"transport"` for backwards compatibility. See
+			 * {@link ConnectionErrorReason}.
+			 */
+			readonly reason?: ConnectionErrorReason;
 	  };
 
 /**
@@ -220,6 +484,62 @@ export type ConnectionSource = (
 ) => () => void;
 
 /**
+ * §4.2.3 — one prop field that BOTH peers changed to DIFFERENT values
+ * within the conflict window (a true same-field, same-node race). Carried
+ * on {@link ConflictEvent.fields} so a host can present a SEMANTIC,
+ * field-level merge ("they set headline to X, you set it to Y") instead of
+ * the coarse "your unsaved change overlapped" notice. Values are the raw,
+ * deserialized prop values (not JSON strings).
+ */
+export interface ConflictFieldDetail {
+	/** Id of the node whose prop conflicts. */
+	readonly nodeId: string;
+	/** The conflicting prop key. */
+	readonly field: string;
+	/** The value the LOCAL peer wrote for this field. */
+	readonly localValue: unknown;
+	/** The value the converged REMOTE state holds for this field. */
+	readonly remoteValue: unknown;
+}
+
+/**
+ * §4.2.3 — the host's chosen resolution for a same-node prop conflict,
+ * returned from {@link CreateYjsAdapterOptions.resolveConflict}:
+ *
+ * - `"remote"` — keep the converged remote-wins value (the default
+ *   last-write-wins outcome). Nothing is written back.
+ * - `"local"` — re-assert the LOCAL peer's value for EVERY conflicting
+ *   field reported on the event ({@link ConflictEvent.fields}).
+ * - `{ fields }` — a precise field-level merge. `fields` is keyed by node
+ *   id; each entry maps a conflicting prop key to the value to write.
+ *   Listed fields are written back; unlisted conflicting fields keep the
+ *   converged remote-wins value.
+ *
+ * The chosen non-`"remote"` resolution is written into the shared `Y.Doc`
+ * (replicated to every peer) and surfaced to the local editor.
+ */
+export type ConflictResolution =
+	| "local"
+	| "remote"
+	| {
+			readonly fields: Readonly<
+				Record<string, Readonly<Record<string, unknown>>>
+			>;
+	  };
+
+/**
+ * §4.2.3 — optional merge-strategy hook. Invoked AFTER `onConflict` fires,
+ * with the same {@link ConflictEvent}. Return a {@link ConflictResolution}
+ * to override pure last-write-wins with a field-level merge that is written
+ * back into the shared doc and replicated to every peer; return `"remote"`
+ * / `undefined` to keep the default converged value. Throwing is treated as
+ * `"remote"` so a faulty hook can never corrupt the doc.
+ */
+export type ResolveConflict = (
+	conflict: ConflictEvent,
+) => ConflictResolution | undefined;
+
+/**
  * Event payload emitted by `YjsSnapshotAdapter.onConflict` when a
  * remote update lands on top of a local in-flight edit.
  */
@@ -231,6 +551,15 @@ export interface ConflictEvent {
 	readonly nodeIds: readonly string[];
 	/** ISO-8601 timestamp the conflict was detected. */
 	readonly at: string;
+	/**
+	 * §4.2.3 — per-field detail for SAME-prop conflicts: every prop key
+	 * BOTH peers changed to a different value, each with its local and
+	 * converged-remote value. Empty (or absent) when the only overlap is a
+	 * child-reorder (no prop fields conflict). Additive — pre-§4.2.3
+	 * consumers that read only `nodeIds` are unaffected; the adapter always
+	 * populates this for prop conflicts.
+	 */
+	readonly fields?: readonly ConflictFieldDetail[];
 }
 
 /**
@@ -246,15 +575,21 @@ export interface ConflictEvent {
  * window holds the last 200 samples — older samples are evicted FIFO.
  */
 /**
- * A2 — why the adapter degraded. The three native-tree read-guard
- * trips plus the legacy-blob decode fallback. Superset of
- * `ReadGuardTrip` (native-tree.ts) so a guard reason flows through
- * `setDegraded` without a lossy cast.
+ * A2 — why the adapter degraded. The native-tree read-guard trips
+ * (structural: `cycle` / `max-depth` / `max-nodes`; per-prop Y3 bounds:
+ * `prop-bytes` / `prop-depth` / `prop-array` / `prop-nodes`) plus the
+ * legacy-blob decode fallback. Superset of `ReadGuardTrip`
+ * (native-tree.ts) so a guard reason flows through `setDegraded`
+ * without a lossy cast.
  */
 export type DegradedReason =
 	| "cycle"
 	| "max-depth"
 	| "max-nodes"
+	| "prop-bytes"
+	| "prop-depth"
+	| "prop-array"
+	| "prop-nodes"
 	| "decode-failure";
 
 export interface MetricsSnapshot {
@@ -342,7 +677,16 @@ export interface MetricsSnapshot {
  * type so hosts can subscribe to overlap events and render sync UI
  * without dropping into Yjs internals.
  */
-export interface YjsSnapshotAdapter extends SnapshotAdapter {
+export interface YjsSnapshotAdapter extends SnapshotAdapter, UndoController {
+	/**
+	 * §4.2.5 — narrowed override of {@link SnapshotAdapter.presence}. The
+	 * runtime object is the same awareness bridge, but typed as
+	 * {@link RichSnapshotAdapterPresence} so hosts can `update` and read
+	 * (`onPeerChange`) the versioned multi-select / viewport / focused-block /
+	 * typing fields with full type-checking, not just the base
+	 * cursor + selection contract.
+	 */
+	readonly presence?: RichSnapshotAdapterPresence;
 	readonly onConflict: (
 		callback: (event: ConflictEvent) => void,
 	) => Unsubscribe;
@@ -371,6 +715,16 @@ export interface YjsSnapshotAdapter extends SnapshotAdapter {
 	 * left untouched — hosts should disable the action in that case.
 	 */
 	readonly forceResync: () => Promise<PageIR | null>;
+	/**
+	 * §4.2.2 — hydrate a snapshot's `PageIR` from the optional
+	 * {@link CreateYjsAdapterOptions.snapshotPersistence} backend, applying
+	 * the configured `decode` transform. Resolves to `undefined` when no
+	 * `snapshotPersistence` adapter was supplied or the backend has no
+	 * record of `id`. Lets a host bootstrap from the durable server-grade
+	 * store independently of the bounded in-`Y.Doc` snapshot window
+	 * (which `load()` reads).
+	 */
+	readonly loadPersistedSnapshot: (id: string) => Promise<PageIR | undefined>;
 	/**
 	 * Phase 3 (D10) observability snapshot. Cheap to call — it copies
 	 * the latency window into a sorted scratch array on each invocation,
@@ -507,9 +861,30 @@ export interface ValidationFailure {
 	readonly error?: unknown;
 }
 
+/**
+ * Optional logging hook for library-level diagnostics that would otherwise
+ * write straight to the console (the deprecated `createCollabPlugin` alias
+ * warning and the default managed-transport error reporter). When provided,
+ * those sites route through this hook instead of `console.warn` /
+ * `console.error`; when omitted, the console fallback is preserved so
+ * existing behavior is unchanged. The `meta` arg carries the underlying
+ * error (or other context) when available.
+ */
+export type CollabLogger = (
+	level: "warn" | "error",
+	message: string,
+	meta?: unknown,
+) => void;
+
 export interface CreateCollabPluginOptions {
 	readonly adapter: SnapshotAdapter;
 	readonly puckConfig?: Config;
+	/**
+	 * Optional logging hook. Routes the deprecated-alias deprecation warning
+	 * through the host's logger instead of `console.warn`. See
+	 * {@link CollabLogger}.
+	 */
+	readonly logger?: CollabLogger;
 	/**
 	 * Optional hook applied to every remote `PageIR` before dispatch into
 	 * Puck. Returning `null` rejects the update and emits a warning via

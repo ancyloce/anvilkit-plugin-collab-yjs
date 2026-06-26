@@ -1046,11 +1046,17 @@ export function createCollabPlugin(
 ): StudioPlugin {
 	if (!createCollabPluginDeprecationWarned) {
 		createCollabPluginDeprecationWarned = true;
-		console.warn(
+		const message =
 			"[@anvilkit/plugin-collab-yjs] `createCollabPlugin` is deprecated; use `createCollabDataPlugin` instead. " +
-				"For the full data + UI bundle, import `createCollabPlugin` from `@anvilkit/plugin-collab-ui`. " +
-				"The legacy alias will be removed in the next minor release.",
-		);
+			"For the full data + UI bundle, import `createCollabPlugin` from `@anvilkit/plugin-collab-ui`. " +
+			"The legacy alias will be removed in the next minor release.";
+		// Route through the host logger when provided; otherwise preserve the
+		// historical `console.warn` fallback so existing callers are unchanged.
+		if (options.logger) {
+			options.logger("warn", message);
+		} else {
+			console.warn(message);
+		}
 	}
 	return createCollabDataPlugin(options);
 }
