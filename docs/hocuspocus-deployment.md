@@ -178,8 +178,26 @@ const adapter = createYjsAdapter({
           break;
       }
     };
+    // Map a rejected `onAuthenticate` into a FIRST-CLASS auth error so the
+    // host can distinguish "your token was refused" from a dropped socket
+    // and prompt for fresh credentials instead of a blind retry. `reason:
+    // "auth"` + `recoverable: false` is the contract the managed transport
+    // (`createManagedTransport`) emits for you; reproduce it here when you
+    // wire a raw provider yourself.
+    const onAuthFailed = ({ reason }: { reason: string }) => {
+      emit({
+        kind: "error",
+        reason: "auth",
+        message: `Authentication failed: ${reason}`,
+        recoverable: false,
+      });
+    };
     provider.on("status", onStatus);
-    return () => provider.off("status", onStatus);
+    provider.on("authenticationFailed", onAuthFailed);
+    return () => {
+      provider.off("status", onStatus);
+      provider.off("authenticationFailed", onAuthFailed);
+    };
   },
 });
 
