@@ -7,8 +7,10 @@ import {
 import * as Y from "yjs";
 import type {
 	ConnectionStatus,
+	PropGuardOptions,
 	RemoteAwareSubscriber,
 	RemoteChange,
+	SnapshotPersistenceOptions,
 } from "../types/types.js";
 import type { ConflictModule } from "./conflicts.js";
 import { decodeIR, encodeIR, hashIR } from "./encode.js";
@@ -61,6 +63,19 @@ export interface SnapshotsModuleOptions {
 	 * {@link CreateYjsAdapterOptions.maxSnapshots}.
 	 */
 	readonly maxSnapshots: number;
+	/**
+	 * Y3/§4.1.3 — per-prop decode bounds forwarded to the native-tree
+	 * read in `readCurrentIR` so the checkpoint/cold-join decode path is
+	 * bounded too. Omit to use the permissive defaults.
+	 */
+	readonly propGuards?: PropGuardOptions;
+	/**
+	 * §4.2.2 — optional server-grade snapshot persistence sink. When
+	 * supplied, `save` mirrors each snapshot (meta + a self-contained
+	 * encoded payload) and `delete` removes it; the in-`Y.Doc` store is
+	 * unchanged and remains the default. Omit for the pre-§4.2.2 behavior.
+	 */
+	readonly snapshotPersistence?: SnapshotPersistenceOptions;
 }
 
 /**
@@ -96,6 +111,7 @@ export interface SnapshotsModule {
 	load(id: string): PageIR;
 	delete(id: string): void;
 	forceResync(): Promise<PageIR | null>;
+	loadPersistedSnapshot(id: string): Promise<PageIR | undefined>;
 	readCurrentIR(): PageIR | undefined;
 	readLastPeer(): PeerInfo | undefined;
 	getLastLocalSavedAt(): number | undefined;
@@ -133,6 +149,8 @@ export function createSnapshots(
 		getCurrentStatus,
 		computeDelta,
 		maxSnapshots,
+		propGuards,
+		snapshotPersistence,
 	} = options;
 	const subscribeListeners = new Set<RemoteAwareSubscriber>();
 	let lastLocalSavedAt: number | undefined;
@@ -177,7 +195,10 @@ export function createSnapshots(
 
 	function readCurrentIR(): PageIR | undefined {
 		if (treeRoot) {
-			const fromTree = readNativeTree(treeRoot);
+			const fromTree = readNativeTree(treeRoot, {
+				onGuardTrip: (reason) => metrics.setDegraded(true, reason),
+				propGuards,
+			});
 			if (fromTree) return fromTree;
 			// Native tree was opted in but failed to decode despite
 			// holding tree data — fall back to the legacy `pageIR` JSON
@@ -209,6 +230,91 @@ export function createSnapshots(
 				metrics.incDispatchFailure();
 			}
 		}
+	}
+
+	// §4.2.2 — best-effort mirror of a backend snapshot-persistence call.
+	// A backend fault NEVER propagates into the in-Y.Doc save/delete path
+	// (which already completed and is the source of truth); it surfaces
+	// only through the host's `onFault` sink. Synchronous throws and
+	// rejected promises are both funneled here.
+	function runMirror(operation: string, fn: () => void | Promise<void>): void {
+		try {
+			const result = fn();
+			if (result instanceof Promise) {
+				result.catch((error: unknown) => {
+					snapshotPersistence?.onFault?.(operation, error);
+				});
+			}
+		} catch (error) {
+			snapshotPersistence?.onFault?.(operation, error);
+		}
+	}
+
+	// §4.2.2 — encode a payload for the external backend: serialize, then
+	// apply the optional encryption-at-rest transform. The in-Y.Doc copy
+	// is written separately (untransformed) by `payloadBackend.write`.
+	function encodeForMirror(payload: StoredPayload): string {
+		const encoded = encodePayload(payload);
+		return snapshotPersistence?.encode
+			? snapshotPersistence.encode(encoded)
+			: encoded;
+	}
+
+	// §4.2.2 — mirror a just-completed save to the backend. The external
+	// record is always a self-contained KEYFRAME (the full IR) so a later
+	// `loadPersistedSnapshot` never depends on the in-Y.Doc delta chain or
+	// its bounded `maxSnapshots` retention window — the whole point of a
+	// durable server-grade store.
+	function mirrorSave(meta: SnapshotMeta, ir: PageIR): void {
+		if (!snapshotPersistence) return;
+		const payload = encodeForMirror({ kind: "full", ir });
+		runMirror("saveSnapshot", () =>
+			snapshotPersistence.adapter.saveSnapshot(meta, payload),
+		);
+	}
+
+	// §4.2.2 — mirror an explicit `delete(id)` to the backend. Retention
+	// evictions are deliberately NOT mirrored: the durable store is meant
+	// to outlive the bounded in-Y.Doc window, so pruning ancient CRDT
+	// history must not delete the backend's record of it.
+	function mirrorDelete(id: string): void {
+		if (!snapshotPersistence) return;
+		runMirror("deleteSnapshot", () =>
+			snapshotPersistence.adapter.deleteSnapshot(id),
+		);
+	}
+
+	async function loadPersistedSnapshot(
+		id: string,
+	): Promise<PageIR | undefined> {
+		if (!snapshotPersistence) return undefined;
+		const stored = await snapshotPersistence.adapter.loadSnapshot(id);
+		if (stored === undefined) return undefined;
+		const decoded = snapshotPersistence.decode
+			? snapshotPersistence.decode(stored)
+			: stored;
+		// §4.2.4 — a backend blob is fully untrusted: a corrupt/version-
+		// drifted/transform-mismatched payload must surface as the typed
+		// `SnapshotCorruptedError`, not leak a raw decode `Error`.
+		let payload: StoredPayload;
+		try {
+			payload = decodePayload(decoded);
+		} catch (error) {
+			throw new SnapshotCorruptedError(
+				id,
+				`plugin-collab-yjs: persisted snapshot "${id}" failed to decode — payload is corrupted, version-drifted, or the decode transform did not match`,
+				{ cause: error },
+			);
+		}
+		// External payloads are always written as self-contained keyframes
+		// (see `mirrorSave`), so a full payload is the expected shape.
+		if (payload.kind === "full") return payload.ir;
+		// Defensive: a non-keyframe blob cannot be reconstructed in
+		// isolation from the backend (no base chain is mirrored).
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: persisted snapshot "${id}" is not a self-contained payload`,
+		);
 	}
 
 	return {
@@ -374,12 +480,25 @@ export function createSnapshots(
 			lastLocalSavedAt = Date.now();
 			metrics.incSaveCount();
 			if (getCurrentStatus().kind !== "synced") queuedEdits += 1;
+			// §4.2.2 — mirror the durable, self-contained snapshot to the
+			// optional backend AFTER the authoritative in-Y.Doc write.
+			mirrorSave(snapshotMeta, ir);
 			return snapshotMeta.id;
 		},
 		list(): readonly SnapshotMeta[] {
 			return readSnapshotMetas(map);
 		},
 		load(id: string): PageIR {
+			// §4.2.4 — when a per-key metadata record exists for this id,
+			// validate it STRICTLY first. A present-but-malformed record
+			// (empty id, invalid savedAt timestamp, malformed delta op) is
+			// corruption — reporting it as `SnapshotCorruptedError` is more
+			// honest than letting the tolerant `readSnapshotMetas` drop it
+			// and surfacing a misleading `SnapshotNotFoundError`.
+			const rawMeta = map.get(snapshotMetaKey(id));
+			if (typeof rawMeta === "string") {
+				decodeSnapshotMetaStrict(rawMeta, id);
+			}
 			const exists = readSnapshotMetas(map).some((meta) => meta.id === id);
 			if (!exists) {
 				// Gone entirely. Retention deletes meta+payload in ONE Yjs
@@ -432,7 +551,10 @@ export function createSnapshots(
 				map.delete(snapshotPayloadKey(id));
 				map.delete(snapshotMetaKey(id));
 			}, localPeer);
+			// §4.2.2 — mirror the explicit deletion to the optional backend.
+			mirrorDelete(id);
 		},
+		loadPersistedSnapshot,
 		async forceResync(): Promise<PageIR | null> {
 			const metas = readSnapshotMetas(map);
 			const latest = metas[metas.length - 1];
@@ -558,13 +680,129 @@ function isSnapshotMeta(value: unknown): value is SnapshotMeta {
 		savedAt?: unknown;
 		delta?: unknown;
 	};
+	// §4.2.4 — beyond the shallow shape: the id must be a non-empty
+	// string, `savedAt` must parse to a finite, non-negative epoch, and a
+	// present `delta` must be a well-formed IRDiff (each op a known kind
+	// with the right primitive fields).
 	return (
-		typeof candidate.id === "string" &&
+		isNonEmptyString(candidate.id) &&
 		(candidate.label === undefined || typeof candidate.label === "string") &&
 		typeof candidate.pageIRHash === "string" &&
-		typeof candidate.savedAt === "string" &&
-		(candidate.delta === undefined || Array.isArray(candidate.delta))
+		isValidSavedAt(candidate.savedAt) &&
+		(candidate.delta === undefined || isValidIRDiff(candidate.delta))
 	);
+}
+
+/**
+ * §4.2.4 — strict counterpart to {@link isSnapshotMeta} for the targeted
+ * `load(id)` read: instead of silently dropping a present-but-malformed
+ * record (which would re-surface as a misleading not-found), it throws a
+ * typed {@link SnapshotCorruptedError} naming the defect. Returns the
+ * validated meta on success.
+ */
+function decodeSnapshotMetaStrict(raw: string, id: string): SnapshotMeta {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata is not valid JSON`,
+			{ cause: error },
+		);
+	}
+	if (!isObject(parsed)) {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata is not an object`,
+		);
+	}
+	if (!isNonEmptyString(parsed.id)) {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata has an empty or non-string id`,
+		);
+	}
+	if (typeof parsed.pageIRHash !== "string") {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata has a non-string pageIRHash`,
+		);
+	}
+	if (!isValidSavedAt(parsed.savedAt)) {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata has an invalid savedAt timestamp`,
+		);
+	}
+	if (parsed.label !== undefined && typeof parsed.label !== "string") {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata has a non-string label`,
+		);
+	}
+	if (parsed.delta !== undefined && !isValidIRDiff(parsed.delta)) {
+		throw new SnapshotCorruptedError(
+			id,
+			`plugin-collab-yjs: snapshot "${id}" metadata carries a malformed delta operation`,
+		);
+	}
+	return parsed as unknown as SnapshotMeta;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * A `SnapshotMeta.savedAt` is an ISO-8601 string; require it to parse to
+ * a finite, non-negative epoch (snapshots are always post-1970), so a
+ * garbage or non-finite timestamp is rejected as corruption.
+ */
+function isValidSavedAt(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const ms = Date.parse(value);
+	return Number.isFinite(ms) && ms >= 0;
+}
+
+/** §4.2.4 — validate a `SnapshotMeta.delta` (an {@link IRDiff}). */
+function isValidIRDiff(value: unknown): boolean {
+	return Array.isArray(value) && value.every(isValidIRDiffOp);
+}
+
+/** §4.2.4 — validate one {@link IRDiffOp}: known kind + correct field types. */
+function isValidIRDiffOp(value: unknown): boolean {
+	if (!isObject(value)) return false;
+	switch (value.kind) {
+		case "add-node":
+			return typeof value.path === "string" && isObject(value.node);
+		case "remove-node":
+			return typeof value.path === "string" && typeof value.nodeId === "string";
+		case "move-node":
+			return (
+				typeof value.from === "string" &&
+				typeof value.to === "string" &&
+				typeof value.nodeId === "string"
+			);
+		case "change-prop":
+			return typeof value.path === "string" && typeof value.key === "string";
+		case "change-children":
+			return (
+				typeof value.path === "string" &&
+				Array.isArray(value.before) &&
+				Array.isArray(value.after) &&
+				value.before.every((entry) => typeof entry === "string") &&
+				value.after.every((entry) => typeof entry === "string")
+			);
+		case "meta-changed":
+			return typeof value.path === "string" && typeof value.key === "string";
+		default:
+			return false;
+	}
 }
 
 const EMPTY_IR: PageIR = {

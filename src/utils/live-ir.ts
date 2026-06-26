@@ -1,6 +1,7 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type * as Y from "yjs";
 
+import type { PropGuardOptions } from "../types/types.js";
 import { hashNodeContent } from "./encode.js";
 
 import {
@@ -100,6 +101,13 @@ interface CachedNode {
 export interface LiveIROptions {
 	/** Forwarded to the guarded native-tree reads (M4). */
 	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
+	/**
+	 * Y3/§4.1.3 — per-prop decode bounds forwarded to every native-tree
+	 * read this cache performs (full rebuild + incremental shallow
+	 * re-reads), so a hostile prop value is bounded on the remote-event
+	 * decode path too.
+	 */
+	readonly propGuards?: PropGuardOptions;
 }
 
 export function createLiveIRState(options?: LiveIROptions): LiveIRState {
@@ -148,6 +156,7 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 	function fullRebuild(treeRoot: Y.Map<unknown>): PageIR | undefined {
 		const ir = readNativeTree(treeRoot, {
 			onGuardTrip: options?.onGuardTrip,
+			propGuards: options?.propGuards,
 		});
 		if (!ir) return undefined;
 		seedFromIR(ir);
@@ -238,7 +247,10 @@ export function createLiveIRState(options?: LiveIROptions): LiveIRState {
 					hashes.delete(id);
 					continue;
 				}
-				const shallow = readNodeShallow(treeRoot, id);
+				const shallow = readNodeShallow(treeRoot, id, {
+					onGuardTrip: options?.onGuardTrip,
+					propGuards: options?.propGuards,
+				});
 				if (!shallow) {
 					// A changed node vanished or is unreadable under a
 					// "non-structural" classification — be conservative

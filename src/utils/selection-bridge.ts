@@ -23,6 +23,7 @@ import {
 	type ComponentData as PuckComponentData,
 } from "@puckeditor/core";
 import { useMemo } from "react";
+import { MAX_NODE_ID_LENGTH, MAX_SELECTION_IDS } from "./presence-schema.js";
 
 type PuckSelectorState = { readonly selectedItem: PuckComponentData | null };
 
@@ -71,6 +72,56 @@ export function usePuckSelection(): PresenceSelection | null {
 	// state mutation.
 	const id = usePuckSelection(selectSelectedId);
 	return useMemo(() => (id === null ? null : { nodeIds: [id] }), [id]);
+}
+
+/**
+ * Multi-select sibling of {@link usePuckSelection} (Report 0006 §4.2.5).
+ *
+ * Merges the single Puck `selectedItem` (the PRIMARY selection, placed
+ * first) with `extraNodeIds` the host tracks itself — Puck's editor
+ * store only models one selected node, so a host that wants to broadcast
+ * a multi-node marquee/shift-click selection supplies the additional ids
+ * here. The merged list is sanitized exactly like an inbound presence
+ * selection: non-string / empty / over-long ids are dropped, duplicates
+ * are removed (primary wins its position), and the result is truncated to
+ * {@link MAX_SELECTION_IDS}. Returns `null` when the merged selection is
+ * empty so hosts can short-circuit instead of broadcasting `{ nodeIds: [] }`.
+ *
+ * The single-id {@link usePuckSelection} contract is untouched.
+ *
+ * @example
+ * ```tsx
+ * const selection = usePuckMultiSelection(marqueeIds);
+ * adapter.presence?.update({ peer, selection: selection ?? undefined });
+ * ```
+ */
+export function usePuckMultiSelection(
+	extraNodeIds?: readonly string[],
+): PresenceSelection | null {
+	const usePuckSelection = getUsePuckSelection();
+	const id = usePuckSelection(selectSelectedId);
+	return useMemo(() => {
+		const nodeIds: string[] = [];
+		const seen = new Set<string>();
+		const add = (candidate: unknown): void => {
+			if (nodeIds.length >= MAX_SELECTION_IDS) return;
+			if (
+				typeof candidate !== "string" ||
+				candidate.length === 0 ||
+				candidate.length > MAX_NODE_ID_LENGTH ||
+				seen.has(candidate)
+			) {
+				return;
+			}
+			seen.add(candidate);
+			nodeIds.push(candidate);
+		};
+		if (id !== null) add(id);
+		if (extraNodeIds !== undefined) {
+			for (const candidate of extraNodeIds) add(candidate);
+		}
+		return nodeIds.length === 0 ? null : { nodeIds };
+	}, [id, extraNodeIds]);
 }
 
 /**

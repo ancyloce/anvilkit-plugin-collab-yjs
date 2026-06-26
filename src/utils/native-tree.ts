@@ -1,6 +1,7 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import * as Y from "yjs";
 
+import type { PropGuardOptions } from "../types/types.js";
 import { hashNodeContent } from "./encode.js";
 
 import {
@@ -102,12 +103,28 @@ function getOrCreateChildIds(nodeMap: Y.Map<unknown>): Y.Array<string> {
 }
 
 /**
- * Reason a guarded native-tree read bailed out early. Shared Yjs data
- * is remote-origin and can be malformed or malicious (M4): cycles,
- * repeated child ids, pathologically deep chains, or an excessive node
- * count would otherwise recurse until the call stack overflows.
+ * Reason a guarded native-tree read bailed out or dropped data. Shared
+ * Yjs data is remote-origin and can be malformed or malicious (M4).
+ *
+ * Structural (FATAL — abort the remaining traversal): `cycle`,
+ * `max-depth`, `max-nodes` — a repeated child id, a pathologically deep
+ * chain, or an excessive node count that would otherwise recurse until
+ * the call stack overflows.
+ *
+ * Per-prop (Y3/§4.1.3, NON-FATAL — drop the offending prop value and
+ * keep decoding the rest of the tree): `prop-bytes` (encoded value
+ * exceeds the byte ceiling, checked pre-parse), `prop-depth` (decoded
+ * value nests too deep), `prop-array` (an array inside the value is too
+ * long), `prop-nodes` (the decoded value holds too many total values).
  */
-export type ReadGuardTrip = "cycle" | "max-depth" | "max-nodes";
+export type ReadGuardTrip =
+	| "cycle"
+	| "max-depth"
+	| "max-nodes"
+	| "prop-bytes"
+	| "prop-depth"
+	| "prop-array"
+	| "prop-nodes";
 
 export interface ReadGuardOptions {
 	/** Maximum tree depth before bailing. Default 5000. */
@@ -115,9 +132,20 @@ export interface ReadGuardOptions {
 	/** Maximum total node count before bailing. Default 200000. */
 	readonly maxNodes?: number;
 	/**
-	 * Invoked once per read the first time any guard trips. Hosts wire
-	 * this to `metrics.setDegraded(true)` so a truncated decode surfaces
-	 * instead of silently dropping nodes.
+	 * Y3/§4.1.3 — per-prop decode bounds applied at the `JSON.parse`
+	 * trust boundary in {@link parseNodeOwn}. Omit for the permissive
+	 * defaults; see {@link PropGuardOptions}. These bounds always apply
+	 * (defaults included), so EVERY decode path through `parseNodeOwn`
+	 * is bounded — there is no un-guarded reader to bypass.
+	 */
+	readonly propGuards?: PropGuardOptions;
+	/**
+	 * Invoked the first time each distinct guard reason occurs in a read.
+	 * Hosts wire this to `metrics.setDegraded(true, reason)` so a
+	 * truncated decode or a dropped prop surfaces instead of silently
+	 * losing data. A structural trip fires once then aborts; per-prop
+	 * bounds may fire several distinct reasons across one read (each at
+	 * most once) while the traversal continues.
 	 */
 	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
 }
@@ -125,31 +153,103 @@ export interface ReadGuardOptions {
 const DEFAULT_MAX_DEPTH = 5000;
 const DEFAULT_MAX_NODES = 200000;
 
+// Y3/§4.1.3 — permissive defaults for the per-prop decode bounds. Sized
+// well above realistic PageIR (a 256 KiB encoded value, 64 levels of
+// nesting, 100k array elements, 1M total values) so ordinary content is
+// never clamped while a pathological hostile payload still trips.
+const DEFAULT_PROP_MAX_BYTES = 256 * 1024;
+const DEFAULT_PROP_MAX_DEPTH = 64;
+const DEFAULT_PROP_MAX_ARRAY_LENGTH = 100_000;
+const DEFAULT_PROP_MAX_NODES = 1_000_000;
+
+interface ResolvedPropGuards {
+	readonly maxBytes: number;
+	readonly maxDepth: number;
+	readonly maxArrayLength: number;
+	readonly maxNodes: number;
+}
+
 interface ReadGuard {
 	readonly visited: Set<string>;
 	count: number;
 	readonly maxDepth: number;
 	readonly maxNodes: number;
 	tripped: boolean;
+	readonly propGuards: ResolvedPropGuards;
+	/** Distinct reasons already surfaced this read (dedupes `onGuardTrip`). */
+	readonly firedReasons: Set<ReadGuardTrip>;
 	readonly onGuardTrip?: (reason: ReadGuardTrip) => void;
 }
 
 function createReadGuard(options?: ReadGuardOptions): ReadGuard {
+	const p = options?.propGuards;
 	return {
 		visited: new Set<string>(),
 		count: 0,
 		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxNodes: options?.maxNodes ?? DEFAULT_MAX_NODES,
 		tripped: false,
+		propGuards: {
+			maxBytes: p?.maxBytes ?? DEFAULT_PROP_MAX_BYTES,
+			maxDepth: p?.maxDepth ?? DEFAULT_PROP_MAX_DEPTH,
+			maxArrayLength: p?.maxArrayLength ?? DEFAULT_PROP_MAX_ARRAY_LENGTH,
+			maxNodes: p?.maxNodes ?? DEFAULT_PROP_MAX_NODES,
+		},
+		firedReasons: new Set<ReadGuardTrip>(),
 		onGuardTrip: options?.onGuardTrip,
 	};
 }
 
+/** Surface a guard reason to the host once per read, without aborting. */
+function noteGuard(guard: ReadGuard, reason: ReadGuardTrip): void {
+	if (guard.firedReasons.has(reason)) return;
+	guard.firedReasons.add(reason);
+	guard.onGuardTrip?.(reason);
+}
+
+/**
+ * FATAL structural trip — record the reason and abort the rest of the
+ * traversal (readNode bails at its top once `tripped` is set).
+ */
 function trip(guard: ReadGuard, reason: ReadGuardTrip): void {
-	if (!guard.tripped) {
-		guard.tripped = true;
-		guard.onGuardTrip?.(reason);
+	if (guard.tripped) return;
+	guard.tripped = true;
+	noteGuard(guard, reason);
+}
+
+/**
+ * Y3/§4.1.3 — structure-bound a freshly decoded prop value. Iterative
+ * (explicit stack) so a deeply nested value can never overflow the
+ * validator's own call stack. Returns the FIRST bound exceeded, or
+ * `undefined` when the value is within every limit. The `maxBytes`
+ * ceiling is enforced separately on the encoded string BEFORE parse.
+ */
+function checkDecodedProp(
+	value: unknown,
+	limits: ResolvedPropGuards,
+): "prop-depth" | "prop-array" | "prop-nodes" | undefined {
+	let nodes = 0;
+	const stack: Array<{ v: unknown; depth: number }> = [{ v: value, depth: 0 }];
+	while (stack.length > 0) {
+		const top = stack.pop();
+		if (top === undefined) continue;
+		const { v, depth } = top;
+		nodes += 1;
+		if (nodes > limits.maxNodes) return "prop-nodes";
+		if (depth > limits.maxDepth) return "prop-depth";
+		if (Array.isArray(v)) {
+			if (v.length > limits.maxArrayLength) return "prop-array";
+			for (let i = 0; i < v.length; i += 1) {
+				stack.push({ v: v[i], depth: depth + 1 });
+			}
+		} else if (v !== null && typeof v === "object") {
+			const obj = v as Record<string, unknown>;
+			for (const key of Object.keys(obj)) {
+				stack.push({ v: obj[key], depth: depth + 1 });
+			}
+		}
 	}
+	return undefined;
 }
 
 export function applyIRToNativeTree(
@@ -668,7 +768,7 @@ function readNode(
 		return undefined;
 	}
 	guard.visited.add(id);
-	const own = parseNodeOwn(root, id);
+	const own = parseNodeOwn(root, id, guard);
 	if (!own) return undefined;
 	const { node, childIds } = own;
 	const children: PageIRNode[] = [];
@@ -693,17 +793,25 @@ export interface ShallowNativeNode {
 	readonly childIds: readonly string[];
 }
 
-/** Parse one node's own fields + child id list (no recursion). */
+/**
+ * Parse one node's own fields + child id list (no recursion). The
+ * optional {@link ReadGuardOptions} threads the Y3 per-prop decode
+ * bounds (and the `onGuardTrip` metric hook) through the live-IR cache's
+ * incremental re-reads; omit them and the permissive defaults still
+ * apply, so this path is never an un-bounded bypass.
+ */
 export function readNodeShallow(
 	root: Y.Map<unknown>,
 	id: string,
+	options?: ReadGuardOptions,
 ): ShallowNativeNode | undefined {
-	return parseNodeOwn(root, id);
+	return parseNodeOwn(root, id, createReadGuard(options));
 }
 
 function parseNodeOwn(
 	root: Y.Map<unknown>,
 	id: string,
+	guard: ReadGuard,
 ): { node: Record<string, unknown>; childIds: string[] } | undefined {
 	const map = getNodeMap(root, id);
 	if (map === undefined) return undefined;
@@ -712,21 +820,37 @@ function parseNodeOwn(
 	const propsMap = getPropsMap(map);
 	const props: Record<string, unknown> = {};
 	if (propsMap !== undefined) {
-		// Y3 — TRUST BOUNDARY: prop values are JSON-parsed from peer-authored
-		// awareness/doc state. The tree walk is bounded for depth/cycles/node
-		// count, but a single prop VALUE's `JSON.parse` is not depth/size-bounded
-		// — by design, because peers are trusted (same room, same auth). An open
-		// multi-tenant deployment that admits untrusted peers must validate or
-		// size-bound prop payloads UPSTREAM (e.g. in `validateRemoteIR`) before
-		// they reach this reader; do not rely on this parse to defend the main
-		// thread against a pathological value.
+		// Y3/§4.1.3 — TRUST BOUNDARY: prop values are JSON-parsed from
+		// peer-authored doc state. A single prop VALUE is now bounded at
+		// this boundary: the encoded string is size-checked BEFORE parse,
+		// and the decoded value is depth/array/node-count-checked AFTER
+		// parse. A prop that exceeds any bound is DROPPED (the node and the
+		// rest of the tree still decode — one hostile prop can't blank the
+		// document) and the matching reason is recorded via `onGuardTrip`
+		// so the adapter surfaces a degraded metric rather than admitting
+		// the payload or stalling the main thread.
+		const pg = guard.propGuards;
 		for (const [key, raw] of propsMap.entries()) {
 			if (typeof raw !== "string") continue;
+			// Pre-parse byte ceiling — a multi-megabyte string never reaches
+			// JSON.parse.
+			if (raw.length > pg.maxBytes) {
+				noteGuard(guard, "prop-bytes");
+				continue;
+			}
+			let parsed: unknown;
 			try {
-				props[key] = JSON.parse(raw);
+				parsed = JSON.parse(raw);
 			} catch {
 				// drop malformed prop value
+				continue;
 			}
+			const violation = checkDecodedProp(parsed, pg);
+			if (violation !== undefined) {
+				noteGuard(guard, violation);
+				continue;
+			}
+			props[key] = parsed;
 		}
 	}
 	const childIdsRaw = getChildIds(map);

@@ -1,15 +1,15 @@
-import type {
-	PresenceState,
-	SnapshotAdapterPresence,
-	Unsubscribe,
-} from "@anvilkit/plugin-version-history";
+import type { Unsubscribe } from "@anvilkit/plugin-version-history";
 import type { Awareness } from "y-protocols/awareness";
 import type { AwarenessRateLimitOptions } from "../types/types.js";
 import { type MetricsState, nowMs } from "./metrics.js";
-import { validatePresenceState } from "./presence-schema.js";
+import {
+	type RichPresenceState,
+	type RichSnapshotAdapterPresence,
+	validatePresenceState,
+} from "./presence-schema.js";
 
 export interface AwarenessBridge {
-	readonly presence: SnapshotAdapterPresence;
+	readonly presence: RichSnapshotAdapterPresence;
 	/** Test/telemetry hook — count of `presence.update` calls dropped by the rate-limiter since adapter creation. */
 	readonly droppedUpdateCount: () => number;
 	destroy(): void;
@@ -87,8 +87,8 @@ export function createAwarenessBridge(
 		return false;
 	}
 
-	const presence: SnapshotAdapterPresence = {
-		update(state: PresenceState): void {
+	const presence: RichSnapshotAdapterPresence = {
+		update(state: RichPresenceState): void {
 			if (!takeToken()) {
 				droppedUpdates += 1;
 				return;
@@ -101,14 +101,14 @@ export function createAwarenessBridge(
 			awareness.setLocalState(state as unknown as Record<string, unknown>);
 		},
 		onPeerChange(
-			callback: (peers: readonly PresenceState[]) => void,
+			callback: (peers: readonly RichPresenceState[]) => void,
 		): Unsubscribe {
 			// M5 — keep a validated peer cache keyed by client id and
 			// update only the clients named in each awareness change
 			// delta, instead of re-validating EVERY peer's state on
 			// every cursor tick. Large rooms / high cursor churn now
 			// cost O(changed) per event rather than O(peers).
-			const cache = new Map<number, PresenceState>();
+			const cache = new Map<number, RichPresenceState>();
 			let seeded = false;
 			// H1 — coalesce the fan-out into the consumer (React setState)
 			// to at most one emit per animation frame, mirroring the

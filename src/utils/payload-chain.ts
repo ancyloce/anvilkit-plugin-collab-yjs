@@ -171,21 +171,18 @@ export function encodePayload(payload: StoredPayload): string {
 export function decodePayload(raw: string): StoredPayload {
 	const parsed: unknown = JSON.parse(raw);
 	if (isObject(parsed)) {
-		if (parsed.kind === "full" && isPageIR(parsed.ir)) {
-			return { kind: "full", ir: parsed.ir };
+		if (parsed.kind === "full") {
+			if (isPageIR(parsed.ir)) return { kind: "full", ir: parsed.ir };
+			// §4.2.4 — distinguish a wrong PAYLOAD VERSION from a wholly
+			// unrecognized blob so the corruption report is actionable.
+			throw new Error(
+				`plugin-collab-yjs: keyframe payload has an unsupported PageIR version (expected "1", got ${describeVersion(
+					parsed.ir,
+				)})`,
+			);
 		}
 		if (parsed.kind === "delta") {
-			if (
-				typeof parsed.base === "string" &&
-				parsed.base.length > 0 &&
-				Array.isArray(parsed.changed) &&
-				Array.isArray(parsed.removed) &&
-				Array.isArray(parsed.assets) &&
-				isObject(parsed.metadata)
-			) {
-				return parsed as unknown as StoredPayload;
-			}
-			throw new Error("plugin-collab-yjs: malformed delta payload record");
+			return decodeDeltaPayload(parsed);
 		}
 		// Legacy: raw encoded PageIR JSON (no `kind`).
 		if (isPageIR(parsed)) {
@@ -195,8 +192,67 @@ export function decodePayload(raw: string): StoredPayload {
 	throw new Error("plugin-collab-yjs: unrecognized snapshot payload shape");
 }
 
+/**
+ * §4.2.4 — validate a delta payload record beyond its outer array shape:
+ * every `changed` entry must be a structurally-valid {@link StoredNode}
+ * and every `removed` entry a non-empty string. Replaying a delta whose
+ * `changed` carries a malformed node silently corrupts the reconstructed
+ * tree (the orphan node is dropped) instead of surfacing the fault — so
+ * reject it here and let the caller map the throw to a typed
+ * `SnapshotCorruptedError`.
+ */
+function decodeDeltaPayload(parsed: Record<string, unknown>): StoredPayload {
+	if (
+		typeof parsed.base !== "string" ||
+		parsed.base.length === 0 ||
+		!Array.isArray(parsed.changed) ||
+		!Array.isArray(parsed.removed) ||
+		!Array.isArray(parsed.assets) ||
+		!isObject(parsed.metadata)
+	) {
+		throw new Error("plugin-collab-yjs: malformed delta payload record");
+	}
+	for (const node of parsed.changed) {
+		if (!isStoredNode(node)) {
+			throw new Error(
+				"plugin-collab-yjs: malformed delta payload — a changed entry is not a valid stored node",
+			);
+		}
+	}
+	for (const id of parsed.removed) {
+		if (typeof id !== "string" || id.length === 0) {
+			throw new Error(
+				"plugin-collab-yjs: malformed delta payload — a removed id is not a non-empty string",
+			);
+		}
+	}
+	return parsed as unknown as StoredPayload;
+}
+
+/** §4.2.4 — a stored delta node carries enough to rebuild against a base. */
+function isStoredNode(value: unknown): value is StoredNode {
+	if (!isObject(value)) return false;
+	if (typeof value.id !== "string" || value.id.length === 0) return false;
+	if (typeof value.type !== "string") return false;
+	if (!isObject(value.props)) return false;
+	if (value.slot !== undefined && typeof value.slot !== "string") return false;
+	if (value.childIds !== undefined) {
+		if (!Array.isArray(value.childIds)) return false;
+		if (!value.childIds.every((child) => typeof child === "string")) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function isPageIR(value: unknown): value is PageIR {
 	return isObject(value) && value.version === "1" && isObject(value.root);
+}
+
+/** Render a payload's PageIR version for a corruption message. */
+function describeVersion(ir: unknown): string {
+	if (isObject(ir) && "version" in ir) return JSON.stringify(ir.version);
+	return "a non-PageIR value";
 }
 
 /**

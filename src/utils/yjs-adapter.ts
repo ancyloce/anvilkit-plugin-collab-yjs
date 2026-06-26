@@ -13,6 +13,7 @@ import type {
 	RemoteChange,
 	YjsSnapshotAdapter,
 } from "../types/types.js";
+import { InvalidAdapterOptionsError } from "./adapter-errors.js";
 import { createAwarenessBridge } from "./awareness-bridge.js";
 import { createConflicts } from "./conflicts.js";
 import { createConnectionStatus } from "./connection-status.js";
@@ -73,9 +74,14 @@ function transactionTouchedType(
 export function createYjsAdapter(
 	options: CreateYjsAdapterOptions,
 ): YjsSnapshotAdapter {
-	const map = options.doc.getMap<string>(options.mapName ?? DEFAULT_MAP_NAME);
+	// §4.2.4 — validate construction options at the trust boundary so a
+	// misconfigured host fails fast (typed `InvalidAdapterOptionsError`)
+	// instead of silently binding to a blank/wrong shared `Y.Map` or
+	// attributing every local write to an id-less peer.
+	const mapName = resolveMapName(options.mapName);
+	const map = options.doc.getMap<string>(mapName);
 	const awareness = options.awareness ?? new Awareness(options.doc);
-	const localPeer: PeerInfo = options.peer ?? { id: createPeerId() };
+	const localPeer: PeerInfo = resolveLocalPeer(options.peer);
 	const staleAfterMs = options.staleAfterMs ?? 2000;
 	// L1 — native-tree is the default encoding. Hosts can opt back into
 	// the legacy whole-document JSON-blob mode by setting
@@ -84,7 +90,7 @@ export function createYjsAdapter(
 	// LWW-clobbering each other.
 	const useNativeTree = options.useNativeTree ?? true;
 	const treeRoot = useNativeTree
-		? options.doc.getMap<unknown>(`${options.mapName ?? DEFAULT_MAP_NAME}:tree`)
+		? options.doc.getMap<unknown>(`${mapName}:tree`)
 		: undefined;
 
 	// L1 migration — if the tree is empty (no version key) but the
@@ -108,16 +114,21 @@ export function createYjsAdapter(
 	}
 
 	const metrics = createMetricsState();
-	const conflicts = createConflicts(staleAfterMs, localPeer);
+	const conflicts = createConflicts(
+		staleAfterMs,
+		localPeer,
+		options.resolveConflict,
+	);
 	// H3 — in-memory authoritative live IR. A guard trip (cycle, depth,
 	// or node-count overflow from malformed/hostile remote tree data,
 	// M4) degrades the adapter so hosts can surface the regression.
 	const liveIR = createLiveIRState({
 		onGuardTrip: (reason) => metrics.setDegraded(true, reason),
+		propGuards: options.propGuards,
 	});
 	const persistence = createPersistence({
 		options: options.persistence,
-		mapName: options.mapName ?? DEFAULT_MAP_NAME,
+		mapName,
 		onFault: options.persistence?.onFault,
 	});
 	const connectionStatus = createConnectionStatus({
@@ -161,6 +172,8 @@ export function createYjsAdapter(
 		getCurrentStatus: () => connectionStatus.getStatus(),
 		computeDelta: options.computeDelta ?? false,
 		maxSnapshots: options.maxSnapshots ?? 200,
+		propGuards: options.propGuards,
+		snapshotPersistence: options.snapshotPersistence,
 	});
 	// Activate the host `connectionSource` subscription now that every
 	// module its `emit` path reaches — `snapshots` (via `onSynced`/
@@ -195,6 +208,7 @@ export function createYjsAdapter(
 			loadedIR =
 				readNativeTree(treeRoot, {
 					onGuardTrip: (reason) => metrics.setDegraded(true, reason),
+					propGuards: options.propGuards,
 				}) ?? undefined;
 		} else {
 			const legacyRaw = map.get(PAGE_IR_KEY);
@@ -216,7 +230,23 @@ export function createYjsAdapter(
 		peer: PeerInfo | undefined,
 		changed?: RemoteChange,
 	): void {
-		conflicts.maybeFire(remoteIR, peer);
+		const resolved = conflicts.maybeFire(remoteIR, peer);
+		if (resolved !== undefined) {
+			// §4.2.3 — a host `resolveConflict` hook chose a field-level
+			// merge over pure last-write-wins. Re-base local tracking onto
+			// the just-merged remote state FIRST so `save` diffs the
+			// override against what is actually in the tree (the LWW
+			// remote-wins value), then write the merge back: this overwrites
+			// the remote value in the shared `Y.Doc` and replicates to every
+			// peer. A local-origin save is filtered out of this observer, so
+			// emit the merged IR to local subscribers explicitly to keep the
+			// editor in sync with the doc.
+			conflicts.setLastLocalIR(remoteIR);
+			snapshots.save(resolved, {});
+			conflicts.closeWindow();
+			snapshots.emitToSubscribers(resolved, peer, changed);
+			return;
+		}
 		conflicts.closeWindow();
 		conflicts.setLastLocalIR(remoteIR);
 		snapshots.emitToSubscribers(remoteIR, peer, changed);
@@ -354,6 +384,47 @@ export function createYjsAdapter(
 		}, localPeer);
 	});
 
+	// §4.1.1 — opt-in local undo/redo. Wrap a `Y.UndoManager` over the
+	// shared type that holds the live PageIR: the native `:tree` map in
+	// the default mode, or the legacy whole-document `map` otherwise.
+	// Local `save()`s transact with `localPeer` as their origin, so
+	// tracking that origin captures the local user's edits while remote
+	// peers' changes (a different origin, transport `applyUpdate`) stay
+	// off the stack and can never be undone locally. Snapshot
+	// metadata/payloads live in `map` (out of the native-tree scope), so
+	// undo rewinds live content without rewriting saved history.
+	const undoStackListeners = new Set<() => void>();
+	let undoManager: Y.UndoManager | undefined;
+	let notifyUndoStackChange: (() => void) | undefined;
+	if (options.undo) {
+		const trackedOrigins = new Set<unknown>([localPeer]);
+		if (options.undo.trackedOrigins) {
+			for (const origin of options.undo.trackedOrigins) {
+				trackedOrigins.add(origin);
+			}
+		}
+		undoManager = new Y.UndoManager(treeRoot ?? map, {
+			trackedOrigins,
+			...(options.undo.captureTimeout !== undefined
+				? { captureTimeout: options.undo.captureTimeout }
+				: {}),
+		});
+		notifyUndoStackChange = () => {
+			for (const listener of undoStackListeners) {
+				try {
+					listener();
+				} catch {
+					// A faulty host listener must not break the stack
+					// observer chain or sibling listeners.
+				}
+			}
+		};
+		undoManager.on("stack-item-added", notifyUndoStackChange);
+		undoManager.on("stack-item-popped", notifyUndoStackChange);
+		undoManager.on("stack-item-updated", notifyUndoStackChange);
+		undoManager.on("stack-cleared", notifyUndoStackChange);
+	}
+
 	return {
 		save(ir: PageIR, meta: Partial<Omit<SnapshotMeta, "id" | "savedAt">>) {
 			return snapshots.save(ir, meta);
@@ -384,11 +455,35 @@ export function createYjsAdapter(
 		forceResync() {
 			return snapshots.forceResync();
 		},
+		loadPersistedSnapshot(id: string) {
+			return snapshots.loadPersistedSnapshot(id);
+		},
 		metrics(): MetricsSnapshot {
 			return metrics.snapshot();
 		},
 		recordTiming: metrics.recordTiming,
 		incInboundCoalesced: metrics.incInboundCoalesced,
+		undo() {
+			undoManager?.undo();
+		},
+		redo() {
+			undoManager?.redo();
+		},
+		canUndo() {
+			return undoManager?.canUndo() ?? false;
+		},
+		canRedo() {
+			return undoManager?.canRedo() ?? false;
+		},
+		clearUndo() {
+			undoManager?.clear();
+		},
+		onUndoStackChange(callback: () => void): Unsubscribe {
+			undoStackListeners.add(callback);
+			return () => {
+				undoStackListeners.delete(callback);
+			};
+		},
 		destroy() {
 			map.unobserve(observer);
 			if (treeRoot && treeObserver) treeRoot.unobserveDeep(treeObserver);
@@ -400,6 +495,16 @@ export function createYjsAdapter(
 			}
 			unsubscribeRemote();
 			persistence.destroy();
+			if (undoManager) {
+				if (notifyUndoStackChange) {
+					undoManager.off("stack-item-added", notifyUndoStackChange);
+					undoManager.off("stack-item-popped", notifyUndoStackChange);
+					undoManager.off("stack-item-updated", notifyUndoStackChange);
+					undoManager.off("stack-cleared", notifyUndoStackChange);
+				}
+				undoManager.destroy();
+			}
+			undoStackListeners.clear();
 		},
 		presence: awarenessBridge.presence,
 	};
@@ -416,4 +521,44 @@ function isLocalOrigin(origin: unknown, localPeer: PeerInfo): boolean {
 
 function createPeerId(): string {
 	return `peer-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * §4.2.4 — resolve and validate the shared `Y.Map` name. Rejects a
+ * non-string, empty, or whitespace-only `mapName` so the adapter never
+ * binds to an unintended (or blank) Y type. `undefined` falls back to
+ * {@link DEFAULT_MAP_NAME}.
+ */
+function resolveMapName(mapName: string | undefined): string {
+	if (mapName === undefined) return DEFAULT_MAP_NAME;
+	if (typeof mapName !== "string" || mapName.trim().length === 0) {
+		throw new InvalidAdapterOptionsError(
+			"mapName",
+			`createYjsAdapter: \`mapName\` must be a non-empty, non-blank string (received ${JSON.stringify(
+				mapName,
+			)}). Omit it to use the default "${DEFAULT_MAP_NAME}".`,
+		);
+	}
+	return mapName;
+}
+
+/**
+ * §4.2.4 — resolve and validate the local peer identity. The configured
+ * peer MUST carry a non-empty, non-blank string `id` — it is the Yjs
+ * transaction origin used to attribute and filter local writes, so an
+ * id-less peer would silently break local/remote discrimination. Omit
+ * `peer` to mint an ephemeral id.
+ */
+function resolveLocalPeer(peer: PeerInfo | undefined): PeerInfo {
+	if (peer === undefined) return { id: createPeerId() };
+	const id = (peer as { id?: unknown }).id;
+	if (typeof id !== "string" || id.trim().length === 0) {
+		throw new InvalidAdapterOptionsError(
+			"peer.id",
+			`createYjsAdapter: \`peer.id\` must be a non-empty, non-blank string identifying the local peer (received ${JSON.stringify(
+				id,
+			)}). Omit \`peer\` to mint an ephemeral id.`,
+		);
+	}
+	return peer;
 }

@@ -1,12 +1,25 @@
 import type { PageIR, PageIRNode } from "@anvilkit/core/types";
 import type { PeerInfo, Unsubscribe } from "@anvilkit/plugin-version-history";
-import type { ConflictEvent } from "../types/types.js";
+import type {
+	ConflictEvent,
+	ConflictFieldDetail,
+	ConflictResolution,
+	ResolveConflict,
+} from "../types/types.js";
 import { nowMs } from "./metrics.js";
 
 export interface ConflictModule {
 	onConflict(callback: (event: ConflictEvent) => void): Unsubscribe;
 	noteLocalSave(ir: PageIR): void;
-	maybeFire(remoteIR: PageIR, remotePeer?: PeerInfo): void;
+	/**
+	 * Evaluate a freshly-merged remote IR against the local in-flight edit.
+	 * Fires `onConflict` for a true overlap and, when a `resolveConflict`
+	 * hook was supplied (§4.2.3), returns the host-chosen merged `PageIR`
+	 * the adapter must write back into the doc. Returns `undefined` when
+	 * there is no conflict, no hook, or the hook kept the default
+	 * last-write-wins value.
+	 */
+	maybeFire(remoteIR: PageIR, remotePeer?: PeerInfo): PageIR | undefined;
 	closeWindow(): void;
 	getLastLocalIR(): PageIR | undefined;
 	setLastLocalIR(ir: PageIR): void;
@@ -41,32 +54,45 @@ export interface ConflictModule {
 export function createConflicts(
 	staleAfterMs: number,
 	localPeer: PeerInfo,
+	resolveConflict?: ResolveConflict,
 ): ConflictModule {
 	const conflictListeners = new Set<(event: ConflictEvent) => void>();
 	let lastLocalIR: PageIR | undefined;
 	let baselineIR: PageIR | undefined;
 	let firstUnconfirmedLocalSaveAt: number | undefined;
 
-	function maybeFire(remoteIR: PageIR, remotePeer?: PeerInfo): void {
-		if (conflictListeners.size === 0) return;
+	function maybeFire(
+		remoteIR: PageIR,
+		remotePeer?: PeerInfo,
+	): PageIR | undefined {
+		// Skip all work when nothing can consume the result: no listeners
+		// AND no merge-strategy hook.
+		if (conflictListeners.size === 0 && resolveConflict === undefined) {
+			return undefined;
+		}
 		if (
 			firstUnconfirmedLocalSaveAt === undefined ||
 			lastLocalIR === undefined
 		) {
-			return;
+			return undefined;
 		}
 		// R5 — monotonic: staleness is a correctness window, not a
 		// display value, so a wall-clock step must not skew it.
 		const elapsed = nowMs() - firstUnconfirmedLocalSaveAt;
-		if (elapsed > staleAfterMs) return;
-		const overlap = computeOverlap(baselineIR, lastLocalIR, remoteIR);
-		if (overlap.length === 0) return;
+		if (elapsed > staleAfterMs) return undefined;
+		const { nodeIds, fields } = computeConflict(
+			baselineIR,
+			lastLocalIR,
+			remoteIR,
+		);
+		if (nodeIds.length === 0) return undefined;
 		const event: ConflictEvent = {
 			kind: "overlap",
 			localPeer,
 			remotePeer,
-			nodeIds: overlap,
+			nodeIds,
 			at: new Date().toISOString(),
+			fields,
 		};
 		for (const listener of conflictListeners) {
 			try {
@@ -76,6 +102,18 @@ export function createConflicts(
 				// not poison the subscribe path.
 			}
 		}
+		// §4.2.3 — consult the optional merge-strategy hook. Default
+		// (no hook) keeps pure last-write-wins: nothing is written back.
+		if (resolveConflict === undefined) return undefined;
+		let resolution: ConflictResolution | undefined;
+		try {
+			resolution = resolveConflict(event);
+		} catch {
+			// A faulty hook must never corrupt the doc — fall back to the
+			// default converged (remote-wins) value.
+			return undefined;
+		}
+		return buildResolvedIR(remoteIR, event, resolution);
 	}
 
 	return {
@@ -109,9 +147,16 @@ export function createConflicts(
 	};
 }
 
+interface ComputedConflict {
+	readonly nodeIds: readonly string[];
+	readonly fields: readonly ConflictFieldDetail[];
+}
+
 /**
- * Compute the set of node ids that represent a TRUE concurrent-edit
- * conflict between the local peer and the remote peer.
+ * Compute the node ids that represent a TRUE concurrent-edit conflict
+ * between the local peer and the remote peer, together with the §4.2.3
+ * per-field detail (which prop keys conflicted, and their local/remote
+ * values) for the SAME-prop overlaps.
  *
  * With baseline (steady-state): a node enters the overlap set only
  * when both peers modified the SAME prop with DIFFERING values, or
@@ -126,42 +171,61 @@ export function createConflicts(
  * the node level — any prop drift still flags the node — so the
  * legacy test suite that depends on conflict firing for "alice
  * saves X, bob saves Y" on a fresh doc keeps passing.
+ *
+ * The `nodeIds` returned here are byte-identical to the pre-§4.2.3
+ * `computeOverlap` result (the boolean overlap test is exactly
+ * "`propConflictFields` non-empty OR `childOrderConflict`"); `fields`
+ * is the additive enrichment.
  */
-function computeOverlap(
+function computeConflict(
 	baseline: PageIR | undefined,
 	local: PageIR,
 	remote: PageIR,
-): readonly string[] {
+): ComputedConflict {
 	const localNodes = collectNodes(local.root);
 	const remoteNodes = collectNodes(remote.root);
 	const baselineNodes = baseline ? collectNodes(baseline.root) : undefined;
-	const overlap: string[] = [];
+	const nodeIds: string[] = [];
+	const fields: ConflictFieldDetail[] = [];
 	for (const [id, localNode] of localNodes) {
 		const remoteNode = remoteNodes.get(id);
 		if (!remoteNode) continue;
 		const baselineNode = baselineNodes?.get(id);
-		if (
-			propsConflict(localNode.props, remoteNode.props, baselineNode?.props) ||
-			childOrderConflict(
-				localNode.children,
-				remoteNode.children,
-				baselineNode?.children,
-			)
-		) {
-			overlap.push(id);
+		const conflictingFields = propConflictFields(
+			id,
+			localNode.props,
+			remoteNode.props,
+			baselineNode?.props,
+		);
+		const childOrder = childOrderConflict(
+			localNode.children,
+			remoteNode.children,
+			baselineNode?.children,
+		);
+		if (conflictingFields.length > 0 || childOrder) {
+			nodeIds.push(id);
+			fields.push(...conflictingFields);
 		}
 	}
-	return overlap;
+	return { nodeIds, fields };
 }
 
-function propsConflict(
+/**
+ * §4.2.3 — the prop keys on which BOTH peers diverged (the same boolean
+ * predicate the legacy `propsConflict` used, now collecting detail). Each
+ * returned {@link ConflictFieldDetail} carries the raw local and converged
+ * remote value so a host can render a semantic merge.
+ */
+function propConflictFields(
+	nodeId: string,
 	left: Record<string, unknown> | undefined,
 	right: Record<string, unknown> | undefined,
 	baseline: Record<string, unknown> | undefined,
-): boolean {
+): ConflictFieldDetail[] {
 	const a = left ?? {};
 	const b = right ?? {};
 	const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
+	const out: ConflictFieldDetail[] = [];
 	for (const key of keys) {
 		const aRaw = JSON.stringify(a[key]);
 		const bRaw = JSON.stringify(b[key]);
@@ -169,15 +233,105 @@ function propsConflict(
 		if (baseline === undefined) {
 			// No baseline anchor — fall back to divergence-as-conflict
 			// (preserves legacy semantics for first-save scenarios).
-			return true;
+			out.push({ nodeId, field: key, localValue: a[key], remoteValue: b[key] });
+			continue;
 		}
 		const baseRaw = JSON.stringify(baseline[key]);
 		// True conflict iff BOTH peers diverged from baseline on this
 		// prop. If only one side moved, the CRDT merged cleanly and
 		// nothing is at risk.
-		if (aRaw !== baseRaw && bRaw !== baseRaw) return true;
+		if (aRaw !== baseRaw && bRaw !== baseRaw) {
+			out.push({ nodeId, field: key, localValue: a[key], remoteValue: b[key] });
+		}
 	}
-	return false;
+	return out;
+}
+
+/**
+ * §4.2.3 — turn a host {@link ConflictResolution} into the concrete
+ * `PageIR` to write back, layered over the converged remote state.
+ * Returns `undefined` when the resolution keeps the default remote-wins
+ * value, or when it produces no material change (so the adapter skips the
+ * write-back entirely).
+ */
+function buildResolvedIR(
+	remoteIR: PageIR,
+	event: ConflictEvent,
+	resolution: ConflictResolution | undefined,
+): PageIR | undefined {
+	if (resolution === undefined || resolution === "remote") return undefined;
+	const overrides = new Map<string, Map<string, unknown>>();
+	const add = (nodeId: string, field: string, value: unknown): void => {
+		let perNode = overrides.get(nodeId);
+		if (!perNode) {
+			perNode = new Map<string, unknown>();
+			overrides.set(nodeId, perNode);
+		}
+		perNode.set(field, value);
+	};
+	if (resolution === "local") {
+		for (const detail of event.fields ?? []) {
+			add(detail.nodeId, detail.field, detail.localValue);
+		}
+	} else {
+		for (const [nodeId, fieldMap] of Object.entries(resolution.fields)) {
+			for (const [field, value] of Object.entries(fieldMap)) {
+				add(nodeId, field, value);
+			}
+		}
+	}
+	if (overrides.size === 0) return undefined;
+	const merged = applyOverrides(remoteIR, overrides);
+	return merged === remoteIR ? undefined : merged;
+}
+
+/**
+ * Structurally clone `ir`, overriding the given prop values on the named
+ * nodes. Returns the same reference when nothing materially changed (an
+ * override that already matched the converged value).
+ */
+function applyOverrides(
+	ir: PageIR,
+	overrides: ReadonlyMap<string, ReadonlyMap<string, unknown>>,
+): PageIR {
+	let changed = false;
+	const visit = (node: PageIRNode): PageIRNode => {
+		let nextChildren = node.children;
+		if (node.children) {
+			const mapped = node.children.map(visit);
+			if (mapped.some((child, i) => child !== node.children?.[i])) {
+				nextChildren = mapped;
+				changed = true;
+			}
+		}
+		const perNode = overrides.get(node.id);
+		let nextProps = node.props;
+		if (perNode) {
+			let propsChanged = false;
+			const draft: Record<string, unknown> = { ...node.props };
+			for (const [field, value] of perNode) {
+				if (JSON.stringify(draft[field]) !== JSON.stringify(value)) {
+					draft[field] = value;
+					propsChanged = true;
+				}
+			}
+			if (propsChanged) {
+				nextProps = draft;
+				changed = true;
+			}
+		}
+		if (nextProps === node.props && nextChildren === node.children) {
+			return node;
+		}
+		// Preserve the node's exact shape: only carry `children` when the
+		// source node had it, so a leaf never gains an explicit
+		// `children: undefined` key.
+		return nextChildren === undefined
+			? { ...node, props: nextProps }
+			: { ...node, props: nextProps, children: nextChildren };
+	};
+	const root = visit(ir.root);
+	return changed ? { ...ir, root } : ir;
 }
 
 function childOrderConflict(
