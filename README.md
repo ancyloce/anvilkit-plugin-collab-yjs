@@ -99,6 +99,7 @@ For the full data + UI bundle in a single factory call, import `createCollabPlug
 - **Cross-tab persistence** — opt-in IndexedDB queue + same-origin `BroadcastChannel` relay. Survives brief disconnects and syncs two tabs of the same app without round-tripping through the transport.
 - **Defense-in-depth presence security** — strict color allowlist, control-character stripping on display names, awareness rate-limiting, and a `validateRemoteIR` hook for hostile-peer rejection.
 - **Force resync** — `adapter.forceResync()` discards unsaved local edits and re-emits the latest authoritative snapshot for the host's "discard and reload" affordance.
+- **Opt-in local undo/redo** — supply the `undo` option to wrap a `Y.UndoManager` over the live `PageIR` tree. Only the local peer's edits are tracked, so `undo()` never rolls back a collaborator's work.
 
 ## API reference
 
@@ -126,6 +127,10 @@ For the full data + UI bundle in a single factory call, import `createCollabPlug
 | `maxSnapshots`       | `number`                    | `200`                  | Hard ceiling on retained snapshots in the shared `Y.Doc`. Older payload+meta pairs are evicted in the same transaction as the write. Set `<= 0` to disable (not recommended). |
 | `awarenessRateLimit` | `AwarenessRateLimitOptions` | `{ maxPerSecond: 30 }` | Token-bucket limiter on outbound `presence.update`. Set `maxPerSecond: Infinity` to disable.                                                                                  |
 | `persistence`        | `PersistenceOptions`        | none                   | Opt-in IndexedDB queue and `BroadcastChannel` relay. Each backend feature-detects and degrades silently on SSR or older browsers.                                             |
+| `undo`               | `UndoOptions`               | none                   | Opt-in local undo/redo. Wraps a `Y.UndoManager` over the live `PageIR` tree and exposes `undo`/`redo`/`canUndo`/`canRedo`/`clearUndo`/`onUndoStackChange` on the adapter. Only the local peer's edits are tracked — remote changes are never on the local stack. |
+| `propGuards`         | `PropGuardOptions`          | permissive             | Bounds at the prop-decode trust boundary (`maxBytes` / `maxDepth` / `maxArrayLength` / `maxNodes`). A prop value exceeding any bound is dropped from the decoded node and recorded as a `degraded` metric. Tune down for open / multi-tenant rooms. |
+| `resolveConflict`    | `ResolveConflict`           | none                   | Semantic merge hook for same-node, same-field prop conflicts. Returns `"local"`, `"remote"`, or `{ fields }`; a non-`"remote"` result is written back into the shared `Y.Doc`. Omit for last-write-wins. |
+| `snapshotPersistence`| `SnapshotPersistenceOptions`| none                   | Opt-in server-grade snapshot mirror. Mirrors each `save()` / `delete()` to a `SnapshotPersistenceAdapter` with `encode` / `decode` (encryption-at-rest) hooks and best-effort `onFault`. The in-`Y.Doc` store stays the source of truth. |
 
 ### `CreateCollabPluginOptions`
 
@@ -142,6 +147,7 @@ For the full data + UI bundle in a single factory call, import `createCollabPlug
 | `inboundScheduler`      | `InboundSchedulerHandleScheduler`      | `requestAnimationFrame` / `setTimeout` | (H1) Override the inbound coalescing scheduler. Defaults to `requestAnimationFrame` in the browser, `setTimeout` under SSR/Node. Intended for deterministic tests — do not set in production. |
 | `inboundBudgetMs`       | `number`                               | `16`       | (H1) Fallback inbound-flush cadence in ms, used when `requestAnimationFrame` is unavailable.                                                   |
 | `replaceBatchThreshold` | `number`                               | `50`       | Per-node `replace` dispatches below this threshold; above it the plugin falls back to a single `setData` call.                                 |
+| `logger`                | `CollabLogger`                         | none       | `(level, message, meta?) => void` hook for the deprecated-alias warning and transport errors. Falls back to `console` when omitted. A custom `onSaveError` / transport `onConnectionError` still takes precedence.                                 |
 
 ### `YjsSnapshotAdapter`
 
@@ -154,6 +160,9 @@ Extends `SnapshotAdapter` (from `@anvilkit/plugin-version-history`) with:
 | `getStatus`      | `() => ConnectionStatus`                                  | Sync read of the latest status. Prefer `onStatusChange` inside `useSyncExternalStore` in React.                                             |
 | `forceResync`    | `() => Promise<PageIR \| null>`                           | Discard unsaved local edits and re-emit the latest authoritative snapshot. Resolves to `null` if no snapshot exists.                        |
 | `metrics`        | `() => MetricsSnapshot`                                   | Point-in-time observability snapshot. Cheap to call at second-cadence polling.                                                              |
+| `loadPersistedSnapshot` | `(id: string) => Promise<PageIR \| undefined>`     | Hydrate a snapshot's `PageIR` from the optional `snapshotPersistence` backend (applies the configured `decode`). Resolves `undefined` when no backend was supplied or it has no record of `id`. |
+| `undo` / `redo` / `canUndo` / `canRedo` / `clearUndo` / `onUndoStackChange` | `UndoController` | Local undo/redo surface (active only when the `undo` option is supplied; inert otherwise). `clearUndo()` resets the stacks on document switch; `onUndoStackChange(cb)` notifies on stack mutations so hosts can re-read `canUndo()`/`canRedo()`. |
+| `presence`       | `RichSnapshotAdapterPresence \| undefined`               | Narrowed from `SnapshotAdapter.presence` so `update`/`onPeerChange` carry the versioned multi-select / viewport / focused-block / typing fields with full type-checking. |
 | `destroy`        | `() => void`                                              | Release internal subscriptions. Called automatically by the Studio plugin's `onDestroy` — only needed if you build a custom plugin wrapper. |
 
 ### `ConnectionStatus` (discriminated union)
@@ -164,10 +173,14 @@ type ConnectionStatus =
   | { kind: "synced"; since: string }
   | { kind: "offline"; since: string; queuedEdits: number }
   | { kind: "reconnecting"; attempt: number; backoffMs: number }
-  | { kind: "error"; message: string; recoverable: boolean };
+  | { kind: "error"; message: string; recoverable: boolean; reason?: ConnectionErrorReason };
+
+type ConnectionErrorReason = "auth" | "transport" | "timeout";
 ```
 
 `queuedEdits` is populated by the adapter from its internal counter; the value the host passes is ignored.
+
+On the `error` variant, `reason` distinguishes an authentication/authorization failure (`"auth"` — not recoverable without fresh credentials, so `recoverable` is `false`) from a generic transport fault (`"transport"`) or a connection-establishment timeout (`"timeout"`). The managed transport increments `reconnecting.attempt` and grows `backoffMs` with jitter across reconnect cycles, resetting on `synced`.
 
 ### `ConflictEvent`
 
@@ -177,9 +190,19 @@ interface ConflictEvent {
   localPeer: PeerInfo;
   remotePeer?: PeerInfo;
   nodeIds: readonly string[];
+  fields?: readonly ConflictFieldDetail[];
   at: string;
 }
+
+interface ConflictFieldDetail {
+  nodeId: string;
+  field: string;
+  localValue: unknown;
+  remoteValue: unknown;
+}
 ```
+
+`fields` enumerates the per-node, per-field prop conflicts for same-field overlaps, so a host can present a semantic merge or resolve them through the `resolveConflict` adapter option.
 
 ### `MetricsSnapshot` (selected fields)
 
@@ -207,17 +230,22 @@ interface ConflictEvent {
 | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `sanitizeDisplayName(value)`                                                            | Strips `U+0000`–`U+001F` / `U+007F` and truncates to `MAX_DISPLAY_NAME_LENGTH` (64 chars). |
 | `validatePeerInfo(value)`                                                               | Strict validation. Color must match the allowlist; rejection drops the entire peer record. |
-| `validatePresenceState(value)` / `validatePresenceCursor` / `validatePresenceSelection` | Inbound awareness validators used by the adapter; exported for host-side defense-in-depth. |
+| `validatePresenceState(value)` / `validatePresenceCursor` / `validatePresenceSelection` | Inbound awareness validators used by the adapter; exported for host-side defense-in-depth. `validatePresenceState` returns the richer `RichPresenceState` (multi-select + viewport + focused-block + typing). |
+| `sanitizePresenceSelection(value)`                                                      | Sanitizing multi-select validator — drops non-string / empty / over-long ids and truncates to `MAX_SELECTION_IDS` instead of rejecting the whole selection. |
+| `validatePresenceViewport` / `validatePresenceActivity`                                 | Validate the richer presence fields — viewport (scroll + clamped zoom) and typing/activity metadata. |
 | `MAX_DISPLAY_NAME_LENGTH`                                                               | `64`.                                                                                      |
+| `MAX_SELECTION_IDS` / `MAX_NODE_ID_LENGTH` / `MIN_VIEWPORT_ZOOM` / `MAX_VIEWPORT_ZOOM` / `PRESENCE_SCHEMA_VERSION` | Sanitization bounds and the presence payload schema version (`2`). |
 
 ### Errors
 
-- `SnapshotCorruptedError`, `SnapshotNotFoundError`, `SnapshotPrunedError` — typed errors thrown from `load(id)`.
+- `SnapshotCorruptedError`, `SnapshotNotFoundError`, `SnapshotPrunedError` — typed errors thrown from `load(id)`. `SnapshotCorruptedError` is also thrown when a decoded snapshot payload/meta fails strict validation (bad payload version, malformed delta op, non-finite timestamp, empty id).
 - `DebouncedAdapterDestroyedError` — thrown when methods are called on a `createDebouncedAdapter` instance after `destroy()`.
+- `InvalidAdapterOptionsError` — thrown by `createYjsAdapter` at construction for an empty/blank/non-string `mapName` or a missing local `peer.id`.
 
 ### React bridge
 
 - `usePuckSelection()` — maps Puck's selected component into `PresenceSelection` for outbound awareness updates. Use inside a host component mounted within `<Puck>`.
+- `usePuckMultiSelection(extraNodeIds?)` — merges the single Puck selection (primary, first) with host-tracked additional ids into a multi-id `PresenceSelection`, de-duplicated, sanitized, and bounded to `MAX_SELECTION_IDS`. Returns `null` when the merged selection is empty.
 
 ## Usage examples
 
