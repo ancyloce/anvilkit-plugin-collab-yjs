@@ -62,8 +62,20 @@ export interface CreateYjsAdapterOptions {
 	 * whole-document LWW. Set `false` to opt back into the legacy
 	 * whole-document JSON-blob encoding. Default: `true`.
 	 *
+	 * **Automatic legacy migration.** When this is `true` and the native
+	 * tree is still EMPTY on first load (no version key) but a legacy
+	 * `pageIR` JSON blob already exists in the shared `Y.Map`, the adapter
+	 * migrates that blob into the native tree once, transactionally, at
+	 * construction time. The migration is ONE-WAY (legacy → native) and
+	 * idempotent: a populated native tree short-circuits it, so subsequent
+	 * adapters on the same doc never re-run or clobber it. An unparseable
+	 * blob leaves the tree empty for the next authoritative `save()` to
+	 * seed.
+	 *
 	 * Native-tree replicas and legacy JSON-blob replicas cannot share
-	 * a Y.Doc — pick one mode per room.
+	 * a Y.Doc — pick one mode per room. There is no reverse (native →
+	 * legacy) migration, so mixing the two encodings in one room is
+	 * unsupported.
 	 */
 	readonly useNativeTree?: boolean;
 	/**
