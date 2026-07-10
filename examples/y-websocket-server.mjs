@@ -194,8 +194,8 @@ function setupWSConnection(conn, req) {
 }
 
 // ── HTTP + WebSocket server ───────────────────────────────────────────────
-// Default 21234 matches `apps/demo/scripts/dev-collab.mjs` and
-// `apps/demo/playwright.config.ts`. 1234 and 11234 are commonly
+// Default 21234 matches `apps/studio/scripts/dev-collab.mjs` and
+// `apps/studio/playwright.config.ts`. 1234 and 11234 are commonly
 // excluded by Hyper-V dynamic port reservations under WSL2, surfacing
 // as a misleading EADDRINUSE even when `/proc/net/tcp*` is empty.
 const port = Number.parseInt(process.argv[2] ?? "21234", 10);

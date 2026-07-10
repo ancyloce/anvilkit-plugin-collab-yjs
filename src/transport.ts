@@ -22,7 +22,7 @@
  *
  * The provider-event → `ConnectionStatus` mappings and the Hocuspocus
  * "emit current state on attach" snapshot are **promoted verbatim** from the
- * demo's hand-written transport (`apps/demo/lib/collab-transport.ts`) — they
+ * demo's hand-written transport (`apps/studio/lib/collab-transport.ts`) — they
  * are already battle-tested; this module moves them, it does not rewrite them.
  */
 

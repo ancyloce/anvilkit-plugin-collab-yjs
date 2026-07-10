@@ -12,7 +12,7 @@
  *     If a host application wants lock semantics, it must wrap
  *     `dispatch` in a guard that drops mutating actions targeting a
  *     locked subtree (the demo's pattern in
- *     `apps/demo/lib/collab-demo.ts` will move there in a follow-up).
+ *     `apps/studio/lib/collab-demo.ts` will move there in a follow-up).
  *
  * The test below models that boundary directly: a "host dispatch
  * wrapper" sits between an incoming subscribe callback and the
