@@ -13,9 +13,8 @@ import type {
 } from "@anvilkit/plugin-version-history";
 import type { Config, PuckApi } from "@puckeditor/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { createDebouncedAdapter } from "../utils/debounced-adapter.js";
 import { createCollabDataPlugin } from "../plugin.js";
+import { createDebouncedAdapter } from "../utils/debounced-adapter.js";
 import { syncInboundScheduler } from "./helpers/inbound.js";
 
 const STUB_CONFIG = { components: {} } as unknown as Config;

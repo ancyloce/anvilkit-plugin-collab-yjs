@@ -22,13 +22,12 @@ import { irToPuckData } from "@anvilkit/ir";
 import type { Config, PuckApi } from "@puckeditor/core";
 import { describe, expect, it, vi } from "vitest";
 import { applyUpdate, Doc as YDoc } from "yjs";
-
-import { createInboundScheduler } from "../utils/inbound-scheduler.js";
 import { createCollabDataPlugin as baseCollabPlugin } from "../plugin.js";
 import type {
 	CreateCollabPluginOptions,
 	RemoteChange,
 } from "../types/types.js";
+import { createInboundScheduler } from "../utils/inbound-scheduler.js";
 import { createYjsAdapter } from "../utils/yjs-adapter.js";
 import {
 	manualInboundScheduler,
