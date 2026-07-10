@@ -379,11 +379,11 @@ A minimal relay lives under `examples/y-websocket-server.mjs` in this repository
 
 ```bash
 # Defaults to ws://127.0.0.1:21234
-node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
+node packages/extensions/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs
 
 # Override the port (positional arg or COLLAB_RELAY_PORT), or bind a
 # non-loopback host with COLLAB_RELAY_HOST:
-node packages/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs 21300
+node packages/extensions/plugins/plugin-collab-yjs/examples/y-websocket-server.mjs 21300
 ```
 
 The relay listens on **port 21234 by default** (1234 and 11234 are avoided because Windows/WSL2 reserves them). Because `y-websocket@3` dropped its bundled server (`y-websocket/bin/utils`) and `@y/websocket-server` targets the incompatible `yjs-14` line, this relay **vendors the classic `y-protocols` sync/awareness server inline against the `yjs-13` stack** — wire-compatible with the demo's `y-websocket@3` client and independent of `y-websocket`'s server packaging. It is a reference for tests and demos, not a production server.
