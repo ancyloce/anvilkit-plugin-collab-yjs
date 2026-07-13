@@ -1,5 +1,5 @@
 /**
- * @file Tests for the configurable logging hook (Report 0006 §4.3.1).
+ * @file Tests for the configurable logging hook (Report 0006 §4.3.2).
  *
  * Two library-level diagnostics previously went straight to the console:
  *   1. The deprecated `createCollabPlugin` alias one-shot `console.warn`.
