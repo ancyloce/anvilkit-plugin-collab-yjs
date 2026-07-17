@@ -25,13 +25,16 @@ export default defineConfig({
 			dts: {
 				autoExtension: true,
 			},
+			id: "esm",
 			format: "esm",
 		},
 		{
 			bundle: false,
 			dts: {
 				autoExtension: true,
+				distPath: "./dist/cjs",
 			},
+			id: "cjs",
 			format: "cjs",
 		},
 	],
