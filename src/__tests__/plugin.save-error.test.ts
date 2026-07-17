@@ -50,10 +50,9 @@ describe("createCollabPlugin onSaveError", () => {
 		await harness.registration.hooks?.onDataChange?.(ctx, irToPuckData(local));
 
 		expect(onSaveError).toHaveBeenCalledTimes(1);
-		expect(onSaveError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
-		expect((onSaveError.mock.calls[0]?.[0] as Error).message).toBe(
-			"backend down",
-		);
+		const saveError = onSaveError.mock.calls[0]?.[0];
+		if (!(saveError instanceof Error)) throw new Error("Expected save error");
+		expect(saveError.message).toBe("backend down");
 		expect(ctx._mocks.logCalls).toEqual(
 			expect.arrayContaining([
 				expect.arrayContaining([
@@ -89,10 +88,9 @@ describe("createCollabPlugin onSaveError", () => {
 		await Promise.resolve();
 
 		expect(onSaveError).toHaveBeenCalledTimes(1);
-		expect(onSaveError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
-		expect((onSaveError.mock.calls[0]?.[0] as Error).message).toBe(
-			"network blip",
-		);
+		const saveError = onSaveError.mock.calls[0]?.[0];
+		if (!(saveError instanceof Error)) throw new Error("Expected save error");
+		expect(saveError.message).toBe("network blip");
 		expect(ctx._mocks.logCalls).toEqual(
 			expect.arrayContaining([
 				expect.arrayContaining([
@@ -139,8 +137,8 @@ describe("createCollabPlugin onSaveError", () => {
 		);
 		expect(saveFailedCall).toBeDefined();
 		const meta = saveFailedCall?.[2] as { error?: unknown } | undefined;
-		expect(meta?.error).toBeInstanceOf(Error);
-		expect((meta?.error as Error).name).toBe("TornDownError");
+		if (!(meta?.error instanceof Error)) throw new Error("Expected save error");
+		expect(meta.error.name).toBe("TornDownError");
 	});
 
 	it("does not throw when onSaveError is omitted (still logs)", async () => {

@@ -124,22 +124,21 @@ describe("createCollabDataPlugin fallback peer (H2)", () => {
 		await harnessA.runInit();
 		await harnessB.runInit();
 
-		const idA = (
-			ctxA._mocks.logCalls.find(
-				(call) =>
-					call[0] === "warn" &&
-					typeof call[1] === "string" &&
-					call[1].includes("options.localPeer omitted"),
-			)?.[2] as { id: string }
-		).id;
-		const idB = (
-			ctxB._mocks.logCalls.find(
-				(call) =>
-					call[0] === "warn" &&
-					typeof call[1] === "string" &&
-					call[1].includes("options.localPeer omitted"),
-			)?.[2] as { id: string }
-		).id;
+		const peerA = ctxA._mocks.logCalls.find(
+			(call) =>
+				call[0] === "warn" &&
+				typeof call[1] === "string" &&
+				call[1].includes("options.localPeer omitted"),
+		)?.[2] as { id: string } | undefined;
+		const peerB = ctxB._mocks.logCalls.find(
+			(call) =>
+				call[0] === "warn" &&
+				typeof call[1] === "string" &&
+				call[1].includes("options.localPeer omitted"),
+		)?.[2] as { id: string } | undefined;
+		if (!peerA || !peerB) throw new Error("Expected generated peer metadata");
+		const idA = peerA.id;
+		const idB = peerB.id;
 
 		expect(idA).toMatch(/^local-/);
 		expect(idB).toMatch(/^local-/);
