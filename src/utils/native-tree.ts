@@ -678,10 +678,11 @@ function reconcileKeyedArray(
 	//    inserted in desired order after the nearest preceding desired
 	//    id that currently exists. Skip ids already present (remote
 	//    concurrent add / echo) so a child is never duplicated.
+	const workSet = new Set(work);
 	for (let di = 0; di < desiredIds.length; di += 1) {
 		const id = desiredIds[di] as string;
 		if (baseSet.has(id)) continue;
-		if (work.includes(id)) continue;
+		if (workSet.has(id)) continue;
 		let insertAt = 0;
 		for (let k = di - 1; k >= 0; k -= 1) {
 			const pi = work.indexOf(desiredIds[k] as string);
@@ -692,6 +693,7 @@ function reconcileKeyedArray(
 		}
 		target.insert(insertAt, [id]);
 		work.splice(insertAt, 0, id);
+		workSet.add(id);
 	}
 
 	// 3. Reorder — only among ids the local peer controls (present AND
