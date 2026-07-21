@@ -41,7 +41,7 @@
 	},
 	"peerDependencies": {
 		"@hocuspocus/provider": "^4.3.0",
-		"@puckeditor/core": "^0.22.1",
+		"@puckeditor/core": "^0.22.2",
 		"react": ">=19.0.0",
 		"react-dom": ">=19.0.0",
 		"y-websocket": "^3.0.0"
@@ -92,7 +92,7 @@
 		"@anvilkit/typescript-config": "workspace:*",
 		"@anvilkit/vitest-config": "workspace:*",
 		"@hocuspocus/provider": "^4.3.0",
-		"@puckeditor/core": "^0.22.1",
+		"@puckeditor/core": "^0.22.2",
 		"@rslib/core": "^0.23.2",
 		"@types/node": "^26.1.1",
 		"@types/react": "^19.2.17",
