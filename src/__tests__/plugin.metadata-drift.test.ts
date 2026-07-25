@@ -23,4 +23,17 @@ describe("plugin metadata drift (M1)", () => {
 		});
 		expect(plugin.meta.version).toBe(pkg.version);
 	});
+
+	it("META declares the native-tree collaboration capability (DD-0019 §7.4 / CORE-P1A-014)", () => {
+		const plugin = createCollabDataPlugin({
+			adapter: { save: () => "id", list: () => [], load: () => null as never },
+		});
+		// TypeScript-meta declaration only (never meta/config.json — JSON
+		// widens the encoding literal to `string`): registering this
+		// transport with Studio's visual editor enabled must trip the
+		// authoring gate deterministically.
+		expect(plugin.meta.capabilities?.collaboration).toEqual({
+			encoding: "native-tree",
+		});
+	});
 });

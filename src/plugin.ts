@@ -3,6 +3,7 @@ import type {
 	PageIRNode,
 	StudioPlugin,
 	StudioPluginContext,
+	StudioPluginMeta,
 	StudioPluginRegistration,
 } from "@anvilkit/core/types";
 import { irToPuckData, puckDataToIR } from "@anvilkit/ir";
@@ -123,11 +124,22 @@ function sweepPendingRemoteData(
 // `version` is derived from package.json so a Changesets bump can never drift
 // the runtime metadata; the metadata-drift guard in
 // `src/__tests__/plugin.metadata-drift.test.ts` (M1) catches regressions.
+//
+// `capabilities.collaboration` is the normative DD-0019 §7.4
+// declaration (CORE-P0-020 freeze §5; CORE-P1A-014): this transport
+// syncs the document as a native Puck tree — not per-authoring-field —
+// so Studio's visual editor disables authoring writers while it is
+// registered (preview and native Puck editing stay fully functional).
+// Declared in TypeScript meta only: `meta/config.json` would widen the
+// encoding literal to `string` and is deliberately not assignable.
 const META = {
 	...config,
 	version: packageJson.version,
 	icon: createElement(Users),
-} as const;
+	capabilities: {
+		collaboration: { encoding: "native-tree" },
+	},
+} as const satisfies Partial<StudioPluginMeta> & { id: string };
 
 /**
  * Create a Studio plugin that wires a SnapshotAdapter v2 (typically
