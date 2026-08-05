@@ -100,16 +100,19 @@ describe("Stage 1 — lazy exact-data echo fallback", () => {
 			d: unknown,
 		) => Promise<void>;
 		await harness.runInit();
+		// The P3.5-05 empty-room seed may save once at init; every
+		// assertion below is about saves AFTER init, so count relative.
+		const seedSaves = adapter.savedIRs.length;
 
 		adapter.pushUpdate(remoteIR);
 		// Late async echo of the exact dispatched data → lazy fallback
 		// registered in finally must suppress it.
 		await onChange(ctx, irToPuckData(remoteIR));
-		expect(adapter.savedIRs).toHaveLength(0);
+		expect(adapter.savedIRs).toHaveLength(seedSaves);
 
 		// A genuine different local edit still saves.
 		await onChange(ctx, irToPuckData(oneChild("typed")));
-		expect(adapter.savedIRs).toHaveLength(1);
+		expect(adapter.savedIRs).toHaveLength(seedSaves + 1);
 	});
 
 	it("sync host: guard handles the echo; no lingering exact-data fallback", async () => {
@@ -141,10 +144,13 @@ describe("Stage 1 — lazy exact-data echo fallback", () => {
 			d: unknown,
 		) => Promise<void>;
 		await harness.runInit();
+		// The P3.5-05 empty-room seed may save once at init; every
+		// assertion below is about saves AFTER init, so count relative.
+		const seedSaves = adapter.savedIRs.length;
 
 		adapter.pushUpdate(remoteIR);
 		// The synchronous echo(es) were suppressed by the active guard.
-		expect(adapter.savedIRs).toHaveLength(0);
+		expect(adapter.savedIRs).toHaveLength(seedSaves);
 
 		// Stage-1 contract: because the guard already consumed the
 		// synchronous echo, NO exact-data fallback was registered. A
@@ -152,6 +158,6 @@ describe("Stage 1 — lazy exact-data echo fallback", () => {
 		// therefore a genuine local edit and IS saved — the redundant
 		// 60s-lingering key that the old eager path kept is gone.
 		await onChange(ctx, irToPuckData(remoteIR));
-		expect(adapter.savedIRs).toHaveLength(1);
+		expect(adapter.savedIRs).toHaveLength(seedSaves + 1);
 	});
 });

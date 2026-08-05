@@ -283,7 +283,7 @@ export function createCollabDataPlugin(
 						}
 						if (puckApiReady && !hydrationDone) {
 							hydrationDone = true;
-							await hydrateLatestSnapshot(
+							const hydrated = await hydrateLatestSnapshot(
 								initCtx,
 								options,
 								pendingRemoteData,
@@ -293,6 +293,9 @@ export function createCollabDataPlugin(
 								locationIndex,
 								telemetry,
 							);
+							if (!hydrated) {
+								await seedEmptyRoom(initCtx, options, ephemeralPeer);
+							}
 						}
 						// Headless / test contexts expose a bound `getPuckApi()`
 						// during `onInit`, so the scheduler may flush immediately.
@@ -310,7 +313,7 @@ export function createCollabDataPlugin(
 							return;
 						}
 						hydrationDone = true;
-						await hydrateLatestSnapshot(
+						const hydrated = await hydrateLatestSnapshot(
 							readyCtx,
 							options,
 							pendingRemoteData,
@@ -320,6 +323,9 @@ export function createCollabDataPlugin(
 							locationIndex,
 							telemetry,
 						);
+						if (!hydrated) {
+							await seedEmptyRoom(readyCtx, options, ephemeralPeer);
+						}
 						// Puck's API is now bound. Allow scheduler flushes, then
 						// drain any inbound update buffered during the mount window
 						// (an empty/no-op buffer is a cheap rAF-cancel + return).
@@ -443,6 +449,45 @@ export function createCollabDataPlugin(
 	};
 }
 
+/**
+ * PLAN-0025 P3.5-05 root-cause fix: seed an EMPTY room with the
+ * editor's current document through the normal save path. Without
+ * this, the document never enters the adapter before the user's first
+ * keystroke, so the conflict window's first save opens WITHOUT a
+ * baseline anchor (`lastLocalIR === undefined`) and the
+ * divergence-as-conflict fallback mis-reports disjoint concurrent
+ * edits as overlaps (probe-proven: both peers' fields flagged).
+ * Seeding also makes cold-joining peers converge on the mounted
+ * document deterministically instead of implicitly via whoever edits
+ * first. Two simultaneous mounters both seeding is benign (whole-blob
+ * LWW converges). The outbound policy gate is honored so read-only
+ * viewers never write; a genuinely empty editor keeps the legacy
+ * first-save semantics untouched.
+ */
+async function seedEmptyRoom(
+	ctx: StudioPluginContext,
+	options: CreateCollabPluginOptions,
+	localPeer: PeerInfo,
+): Promise<void> {
+	if (!options.puckConfig) return;
+	try {
+		const data = ctx.getData();
+		const content = (data as { content?: readonly unknown[] })?.content;
+		if (!Array.isArray(content) || content.length === 0) return;
+		const seedIR = puckDataToIR(data, options.puckConfig);
+		const violation = enforcePolicy(
+			seedIR,
+			localPeer,
+			options.policy,
+			"outbound",
+		);
+		if (violation) return;
+		await Promise.resolve(options.adapter.save(seedIR, {}));
+	} catch (error) {
+		ctx.log("warn", "plugin-collab-yjs: empty-room seed failed.", { error });
+	}
+}
+
 async function hydrateLatestSnapshot(
 	ctx: StudioPluginContext,
 	options: CreateCollabPluginOptions,
@@ -452,11 +497,11 @@ async function hydrateLatestSnapshot(
 	remoteGuard: RemoteDispatchGuard,
 	locationIndex: LocationIndex,
 	telemetry: AdapterTelemetry,
-): Promise<void> {
+): Promise<boolean> {
 	try {
 		const snapshots = await Promise.resolve(options.adapter.list());
 		const latest = snapshots.at(-1);
-		if (!latest) return;
+		if (!latest) return false;
 		const ir = await Promise.resolve(options.adapter.load(latest.id));
 		dispatchRemoteIR(
 			ctx,
@@ -469,10 +514,12 @@ async function hydrateLatestSnapshot(
 			locationIndex,
 			telemetry,
 		);
+		return true;
 	} catch (error) {
 		ctx.log("warn", "plugin-collab-yjs: initial hydrate failed.", {
 			error,
 		});
+		return false;
 	}
 }
 

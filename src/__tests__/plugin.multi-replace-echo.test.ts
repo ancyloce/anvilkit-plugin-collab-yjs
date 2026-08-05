@@ -91,6 +91,9 @@ describe("plugin multi-replace echo suppression (H2)", () => {
 		);
 		onChange = harness.registration.hooks?.onDataChange as typeof onChange;
 		await harness.runInit();
+		// The P3.5-05 empty-room seed may save once at init; every
+		// assertion below is about saves AFTER init, so count relative.
+		const seedSaves = adapter.savedIRs.length;
 
 		adapter.pushUpdate(remoteIR);
 
@@ -100,10 +103,10 @@ describe("plugin multi-replace echo suppression (H2)", () => {
 			(c) => (c[0] as { type: string }).type === "replace",
 		);
 		expect(replaceCalls.length).toBeGreaterThanOrEqual(2);
-		expect(adapter.savedIRs).toHaveLength(0);
+		expect(adapter.savedIRs).toHaveLength(seedSaves);
 
 		// A genuine local edit AFTER the dispatch closes still saves.
 		await onChange?.(ctx, irToPuckData(twoChildren("local-1", "local-2")));
-		expect(adapter.savedIRs).toHaveLength(1);
+		expect(adapter.savedIRs).toHaveLength(seedSaves + 1);
 	});
 });
