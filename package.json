@@ -41,7 +41,7 @@
 	},
 	"peerDependencies": {
 		"@hocuspocus/provider": "^4.4.0",
-		"@puckeditor/core": "^0.22.4",
+		"@puckeditor/core": "^0.23.0",
 		"react": ">=19.0.0",
 		"react-dom": ">=19.0.0",
 		"y-websocket": "^3.0.0"
@@ -68,9 +68,9 @@
 		"@anvilkit/ir": "workspace:*",
 		"@anvilkit/plugin-version-history": "workspace:*",
 		"@anvilkit/utils": "workspace:*",
-		"lucide-react": "^1.28.0",
+		"lucide-react": "^1.30.0",
 		"y-protocols": "^1.0.7",
-		"yjs": "^13.6.31"
+		"yjs": "^13.6.32"
 	},
 	"scripts": {
 		"build": "rslib build --lib esm && rslib build --lib cjs --no-clean",
@@ -92,16 +92,16 @@
 		"@anvilkit/typescript-config": "workspace:*",
 		"@anvilkit/vitest-config": "workspace:*",
 		"@hocuspocus/provider": "^4.4.0",
-		"@puckeditor/core": "^0.22.4",
+		"@puckeditor/core": "^0.23.0",
 		"@rslib/core": "^0.23.2",
-		"@types/node": "^26.1.1",
-		"@types/react": "^19.2.17",
-		"@types/react-dom": "19.2.3",
+		"@types/node": "^26.2.0",
+		"@types/react": "^19.2.18",
+		"@types/react-dom": "19.2.4",
 		"esbuild": "^0.28.1",
 		"fake-indexeddb": "^6.2.5",
 		"lib0": "^0.2.117",
 		"madge": "^8.0.0",
-		"publint": "^0.3.22",
+		"publint": "^0.3.23",
 		"react": "^19.2.8",
 		"react-dom": "^19.2.8",
 		"typescript": "7.0.2",
