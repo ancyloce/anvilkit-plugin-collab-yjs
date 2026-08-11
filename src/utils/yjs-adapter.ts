@@ -49,12 +49,38 @@ function transactionTouchedType(
 /**
  * Build a SnapshotAdapter v2 backed by a shared Y.Doc.
  *
- * Encoding is intentionally simple for the alpha cycle: the latest
- * live PageIR is JSON-encoded under one Y.Map key, while saved
- * snapshots are stored under per-id metadata and payload keys. Yjs
- * gives last-writer-wins semantics to the live key with deterministic
- * conflict resolution, which is correct (eventually-consistent +
- * convergent) but coarse-grained.
+ * ## Two surfaces, two merge behaviours (do not conflate them)
+ *
+ * **The live document** is the native per-node tree at
+ * `<mapName>:tree` (see `native-tree.ts`), and it is the DEFAULT
+ * encoding — `useNativeTree: false` is the opt-out back to the legacy
+ * whole-document JSON blob under {@link PAGE_IR_KEY}. Its merge
+ * granularity is **one Y.Map key per node per prop name**:
+ *
+ * - two peers editing **different nodes** → disjoint per-node Y.Maps →
+ *   both edits survive;
+ * - two peers editing **different props of the same node** (e.g.
+ *   `title` vs `appearance`) → different keys of that node's `props`
+ *   Y.Map → both edits survive;
+ * - two peers editing **the same prop of the same node** → one Y.Map
+ *   key → Yjs last-writer-wins, exactly one edit survives.
+ *
+ * The third bullet is the one with authoring consequences. A node's
+ * whole `appearance` carrier — every style target, breakpoint and
+ * property — is ONE prop key, JSON-encoded as a single string by
+ * `reconcileProps`. So two peers styling two *different targets of the
+ * same node* collide, and one peer's target edit is dropped whole.
+ * Sub-prop merge granularity does not exist. Verified against this
+ * adapter under a real partition/heal (`p6-005`).
+ *
+ * **The snapshot store** is a separate set of `snapshotMeta:<id>` /
+ * `snapshotPayload:<id>` keys under the same `Y.Map`. `save`, `list`,
+ * `load` and `forceResync` address THAT store, never the live tree.
+ * Each save writes one peer's WHOLE document as its own record, so
+ * reading the newest snapshot is whole-document last-writer-wins even
+ * in cases the live tree merged correctly — including cold-join
+ * hydration, which loads `list().at(-1)`. A snapshot is a point-in-
+ * time record of one peer's document, not the converged document.
  *
  * Internal structure (post-2026-05-13 split): the public factory
  * composes six focused modules:

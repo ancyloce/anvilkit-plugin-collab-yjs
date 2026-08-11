@@ -41,6 +41,27 @@ import {
  * The flat addressing means two peers concurrently editing **different**
  * node ids touch disjoint Y.Maps and merge cleanly. Two peers editing
  * the same node still rely on Y.Map prop-level LWW.
+ *
+ * ## Merge granularity is per node, per PROP KEY — and no finer
+ *
+ * `props` is a `Y.Map` whose values are whole JSON-encoded prop values
+ * (see {@link reconcileProps}), so the CRDT's smallest unit of
+ * concurrent authorship is one prop of one node. Two peers editing
+ * `title` and `appearance` of the same node both survive; two peers
+ * editing `appearance` of the same node do not — Yjs resolves the key
+ * by last-writer-wins (client-id tiebreak, not wall clock) and the
+ * loser's value is dropped in full.
+ *
+ * That matters because PLAN-0026's canonical carrier puts a node's
+ * ENTIRE authored appearance — every declared style target, every
+ * breakpoint layer, every property — inside the single `appearance`
+ * prop (`AnvilAppearance.targets`). So two authors styling two
+ * *different targets of the same node* concurrently is a conflict, and
+ * one of them silently loses their whole target. Verified under a real
+ * partition/heal against `createYjsAdapter` (`p6-005`); reported, not
+ * fixed, because finer granularity means changing the on-wire node
+ * encoding (a nested per-target `Y.Map` instead of one JSON string)
+ * plus a tree migration, which is a design change and not a docs pass.
  */
 
 // Re-export the native-tree keys for backward compatibility with
