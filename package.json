@@ -44,7 +44,7 @@
 		"@puckeditor/core": "^0.23.0",
 		"react": ">=19.0.0",
 		"react-dom": ">=19.0.0",
-		"y-websocket": "^3.0.0"
+		"y-websocket": "^3.1.0"
 	},
 	"peerDependenciesMeta": {
 		"react": {
@@ -68,7 +68,7 @@
 		"@anvilkit/ir": "workspace:*",
 		"@anvilkit/plugin-version-history": "workspace:*",
 		"@anvilkit/utils": "workspace:*",
-		"lucide-react": "^1.31.0",
+		"lucide-react": "^1.41.0",
 		"y-protocols": "^1.0.7",
 		"yjs": "^13.6.32"
 	},
@@ -93,11 +93,11 @@
 		"@anvilkit/vitest-config": "workspace:*",
 		"@hocuspocus/provider": "^4.4.0",
 		"@puckeditor/core": "^0.23.0",
-		"@rslib/core": "^0.23.2",
-		"@types/node": "^26.2.0",
+		"@rslib/core": "^1.0.0",
+		"@types/node": "^26.4.1",
 		"@types/react": "^19.2.18",
 		"@types/react-dom": "19.2.4",
-		"esbuild": "^0.28.1",
+		"esbuild": "^0.28.2",
 		"fake-indexeddb": "^6.2.5",
 		"lib0": "^0.2.117",
 		"madge": "^8.0.0",
@@ -105,8 +105,8 @@
 		"react": "^19.2.8",
 		"react-dom": "^19.2.8",
 		"typescript": "7.0.2",
-		"vitest": "^4.1.10",
+		"vitest": "^5.0.0",
 		"ws": "^8.20.0",
-		"y-websocket": "^3.0.0"
+		"y-websocket": "^3.1.0"
 	}
 }
